@@ -1,0 +1,41 @@
+white_line
+Intersection_driving_guide_line
+crossing_dotted_line
+dashed_stop_line
+yallow_line
+white_lane_line
+stop_line
+yallow_lane_line
+red_lane_line
+allocation_line
+double_white_line
+double_yallow_line
+One-way_no_overtaking_line-dotted_line
+One-way_no_overtaking_line-solid_line
+One-way_no_lane_change_markings-dotted_line
+One-way_no_lane_change_markings-solid_line
+Speed_reduction_line
+rectangle
+Y-type_line
+twill_lines
+straight arrow
+left arrow
+right arrow
+left straight arrow
+straight right arrow
+left right arrow
+left straight right  arrow
+diamond
+triangle
+level_crossing-dotted_line
+level_crossing-X_line
+mesh_line
+longitudinal_crosswalk
+diagonal_Crosswalk
+all_directions_Crosswalk
+word
+parking_grid-moto
+parking_grid-small_car
+parking_grid-large_car
+diagonal arrow
+visual rumble strips

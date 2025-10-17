@@ -1,0 +1,4 @@
+logs
+satellite
+*.pyc
+*.pt

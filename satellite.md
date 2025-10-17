@@ -1,0 +1,164 @@
+# satellite EXP 1
+
+## convert dataset
+    python /home/rtx5090/Documents/Rontgen/dataset_utils/labelme2yolo12seg.py \
+    --input /home/rtx5090/Documents/Rontgen/dataset/satellite/109 \
+    --output /home/rtx5090/Documents/Rontgen/dataset/satellite/109/yolodataset \
+    --names /home/rtx5090/Documents/Rontgen/yolov12/data/satellite-label-names.txt \
+    --val-ratio 0.2 --test-ratio 0.0 --copy
+
+
+
+## train @ conda env: Rontgen
+    nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
+    --model /home/rtx5090/Documents/Rontgen/yolov12/yolov12x-seg.pt \
+    --data /home/rtx5090/Documents/Rontgen/dataset/satellite/109/YOLODataset2/dataset.yaml \
+    --project satellite \
+    --name e1 \
+    --imgsz 640 \
+    --batch 160 \
+    &> logs/satellite_e1.txt &
+## log
+    tail -f logs/satellite_e1.txt
+
+## export 
+    python /home/rtx5090/Documents/Rontgen/yolov12/export.py \
+    --weights /home/rtx5090/Documents/Rontgen/yolov12/satellite/train_e1/weights/best.pt \
+    --include onnx
+
+# satellite EXP 2
+
+## train @ conda env: Rontgen
+nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
+  --model /home/rtx5090/Documents/Rontgen/yolov12/yolov12x-seg.pt \
+  --data /home/rtx5090/Documents/Rontgen/dataset/satellite/109/YOLODataset2/dataset.yaml \
+  --project satellite \
+  --name e2 \
+  --imgsz 640 \
+  --batch 160 \
+  -- \
+  cache=True workers=12 \
+  hsv_h=0.000 hsv_s=0.7 hsv_v=0.4 \
+  degrees=180 translate=0.1 shear=0.0 perspective=0.0 \
+  fliplr=0.5 flipud=0.5 \
+  mosaic=1.0 mixup=0.1 copy_paste=0.0 \
+  cos_lr=True optimizer=SGD lr0=0.01 momentum=0.937 weight_decay=0.0005 \
+  &> logs/satellite_e2.txt &
+
+
+## log
+    tail -f logs/satellite_e2.txt
+    tensorboard --logdir /home/rtx5090/Documents/Rontgen/yolov12/satellite --bind_all
+
+# satellite EXP 3
+
+## train @ conda env: Rontgen
+nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
+  --model /home/rtx5090/Documents/Rontgen/yolov12/yolov12x-seg.pt \
+  --data /home/rtx5090/Documents/Rontgen/dataset/satellite/109/YOLODataset2/dataset.yaml \
+  --project satellite \
+  --name e3 \
+  --imgsz 640 \
+  --batch 4 \
+  --exist_ok \
+  -- \
+  cache=True workers=12 \
+  hsv_h=0.000 hsv_s=0.7 hsv_v=0.4 \
+  degrees=180 translate=0.1 shear=0.0 perspective=0.0 \
+  fliplr=0.5 flipud=0.5 \
+  mosaic=1.0 mixup=0.1 copy_paste=0.0 \
+  cos_lr=True optimizer=SGD lr0=0.01 momentum=0.937 weight_decay=0.0005 \
+  &> logs/satellite_e3.txt &
+
+
+## log
+    tail -f logs/satellite_e3.txt
+    tensorboard --logdir /home/rtx5090/Documents/Rontgen/yolov12/satellite --bind_all
+
+# satellite EXP 4
+
+## train @ conda env: Rontgen
+nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
+  --model /home/rtx5090/Documents/Rontgen/yolov12/yolov12x-seg.pt \
+  --pretrained "" \
+  --data /home/rtx5090/Documents/Rontgen/dataset/satellite/109/YOLODataset2/dataset.yaml \
+  --project satellite --name e2-b1 \
+  --imgsz 1080 --batch 1 \
+  -- \
+  nbs=1 lr0=0.003 warmup_epochs=8 \
+  patience=300 close_mosaic=60 save_period=10 \
+  &> logs/satellite_e2_b1.txt &
+
+## log
+    tail -f logs/satellite_e2_b1.txt
+    tensorboard --logdir /home/rtx5090/Documents/Rontgen/yolov12/satellite --bind_all
+
+# satellite EXP 5
+
+## convert dataset
+    python /home/rtx5090/Documents/Rontgen/dataset_utils/labelme2yolo12seg.py \
+    --input /home/rtx5090/Documents/Rontgen/dataset/satellite/ \
+    --output /home/rtx5090/Documents/Rontgen/dataset/satellite/yolodataset \
+    --names /home/rtx5090/Documents/Rontgen/yolov12/data/satellite-label-names.txt \
+    --val-ratio 0.2 --test-ratio 0.0 --copy
+
+## train @ conda env: Rontgen
+nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
+  --model /home/rtx5090/Documents/Rontgen/yolov12/yolov12x-seg.pt \
+  --pretrained "" \
+  --data /home/rtx5090/Documents/Rontgen/dataset/satellite/yolodataset/dataset.yaml \
+  --project satellite --name e5 \
+  --imgsz 1080 --batch 1 \
+  -- \
+  nbs=1 lr0=0.003 warmup_epochs=8 \
+  patience=300 close_mosaic=60 save_period=10 \
+  &> logs/satellite_e5.txt &
+
+## log
+    tail -f logs/satellite_e5.txt
+    tensorboard --logdir /home/rtx5090/Documents/Rontgen/yolov12/satellite --bind_all
+
+# satellite EXP 6
+
+## convert dataset
+    python /home/rtx5090/Documents/Rontgen/dataset_utils/labelme2yolo12seg.py \
+    --input /home/rtx5090/Documents/Rontgen/dataset/satellite/ \
+    --output /home/rtx5090/Documents/Rontgen/dataset/satellite/yolodataset \
+    --names /home/rtx5090/Documents/Rontgen/yolov12/data/satellite-label-names.txt \
+    --val-ratio 0.2 --test-ratio 0.0 --copy
+
+## train @ conda env: Rontgen
+nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
+  --model /home/rtx5090/Documents/Rontgen/yolov12/yolov12x-seg.pt \
+  --pretrained "" \
+  --data /home/rtx5090/Documents/Rontgen/dataset/satellite/yolodataset/dataset.yaml \
+  --project satellite --name e6_b1 \
+  --imgsz 1080 --batch 1 \
+  -- \
+  nbs=1 lr0=0.003 warmup_epochs=8 \
+  patience=300 close_mosaic=60 save_period=10 \
+  &> logs/satellite_e6_b1.txt &
+
+# satellite EXP 6a
+
+## train @ conda env: Rontgen
+nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
+  --model /home/rtx5090/Documents/Rontgen/yolov12/yolov12x-seg.pt \
+  --pretrained "" \
+  --data /home/rtx5090/Documents/Rontgen/dataset/satellite/yolodataset/dataset.yaml \
+  --project satellite --name e6_b1_a \
+  --imgsz 1080 --batch 1 \
+  -- \
+  nbs=1 lr0=0.003 warmup_epochs=8 \
+  patience=300 close_mosaic=60 save_period=10 \
+  hsv_h=0.000 hsv_s=0.7 hsv_v=0.4 \
+  degrees=180 translate=0.1 shear=0.0 perspective=0.0 \
+  fliplr=0.5 flipud=0.5 \
+  mosaic=1.0 mixup=0.1 copy_paste=0.0 \
+  cos_lr=True optimizer=SGD lr0=0.01 momentum=0.937 weight_decay=0.0005 \
+  &> logs/satellite_e6_b1_a.txt &
+
+## export 
+    python /home/rtx5090/Documents/Rontgen/yolov12/export.py \
+    --weights /home/rtx5090/Documents/Rontgen/yolov12/satellite/train_e6_b1_a/weights/best.pt \
+    --include onnx
