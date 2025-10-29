@@ -1,0 +1,15 @@
+# 1) 升級基礎工具 + 裝 ninja
+pip install -U pip setuptools wheel packaging ninja
+ninja --version  # 確認 ninja 可用
+
+# 2)（可選，但常救命）安裝編譯工具與 CUDA toolkit 12.1
+# 沒有 nvcc 會大幅增加出錯機率
+nvcc --version || sudo apt-get update && sudo apt-get install -y build-essential cuda-toolkit-12-1
+# 或者用 conda 裝（少動系統環境）
+# conda install -y -c "nvidia/label/cuda-12.1.0" cuda-toolkit
+
+# 3) 重新安裝 flash-attn（重點：--no-build-isolation）
+# 若記憶體不大，限制並行編譯數量（例：4）
+export MAX_JOBS=4
+# 若你是 Ampere/ Ada/ Hopper（30/40 系、A100/H100），這版支援
+pip install flash-attn==2.8.3 --no-build-isolation -v

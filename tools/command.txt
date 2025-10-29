@@ -1,0 +1,10 @@
+針對指定資料夾中的影像進行批次目標檢測，並將結果以VOC XML格式輸出，同時生成可視化影像。
+
+python batch_detect_to_voc.py \
+  --source /home/ubuntu/Desktop/Rontgen/dataset/lilin_dataset/20251014-filtered/K22 \
+  --model /home/ubuntu/Desktop/Rontgen/yolov12/yolov12m.pt \
+  --imgsz 640 \
+  --conf 0.25 \
+  --out-xml /home/ubuntu/Desktop/Rontgen/dataset/lilin_dataset/20251014-filtered/K22/voc_xml \
+  --out-vis /home/ubuntu/Desktop/Rontgen/dataset/lilin_dataset/20251014-filtered/K22/vis \
+  --recursive --write-empty-xml

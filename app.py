@@ -309,7 +309,7 @@ def app():
                 show_boxes = gr.Checkbox(value=True, label="顯示 bbox 外框")
                 show_masks = gr.Checkbox(value=True, label="顯示 mask 封遮")
                 show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
-
+                yolov12_infer = gr.Button(value="Detect Objects (Run)")
                 # ===== 類別篩選（ID:Name），預設全選 + 快捷按鈕 =====
                 gr.Markdown("### 類別篩選（預設全選）")
                 with gr.Row():
@@ -326,7 +326,7 @@ def app():
                 # 保留目前 choices 狀態（避免從元件讀不到 choices）
                 class_choices_state = gr.State(value=[])
 
-                yolov12_infer = gr.Button(value="Detect Objects (Run)")
+                
 
             with gr.Column():
                 # 影像：用 Gallery 並排
