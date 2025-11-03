@@ -86,7 +86,7 @@ nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
   --imgsz 1080 --batch 1 \
   -- \
   nbs=1 lr0=0.003 warmup_epochs=8 \
-  patience=300 close_mosaic=60 save_period=10 \
+  patience=300 close_mosaic=60  \
   &> logs/satellite_e2_b1.txt &
 
 ## log
@@ -111,7 +111,7 @@ nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
   --imgsz 1080 --batch 1 \
   -- \
   nbs=1 lr0=0.003 warmup_epochs=8 \
-  patience=300 close_mosaic=60 save_period=10 \
+  patience=300 close_mosaic=60  \
   &> logs/satellite_e5.txt &
 
 ## log
@@ -136,7 +136,7 @@ nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
   --imgsz 1080 --batch 1 \
   -- \
   nbs=1 lr0=0.003 warmup_epochs=8 \
-  patience=300 close_mosaic=60 save_period=10 \
+  patience=300 close_mosaic=60  \
   &> logs/satellite_e6_b1.txt &
 
 # satellite EXP 6a
@@ -150,7 +150,7 @@ nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
   --imgsz 1080 --batch 1 \
   -- \
   nbs=1 lr0=0.003 warmup_epochs=8 \
-  patience=300 close_mosaic=60 save_period=10 \
+  patience=300 close_mosaic=60  \
   hsv_h=0.000 hsv_s=0.7 hsv_v=0.4 \
   degrees=180 translate=0.1 shear=0.0 perspective=0.0 \
   fliplr=0.5 flipud=0.5 \
@@ -162,3 +162,55 @@ nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
     python /home/rtx5090/Documents/Rontgen/yolov12/export.py \
     --weights /home/rtx5090/Documents/Rontgen/yolov12/satellite/train_e6_b1_a/weights/best.pt \
     --include onnx
+
+# satellite EXP 6-hd @ ada-6000
+  將影像提高到 1600 訓練
+  遇到 device 序號問題
+  ```
+  export CUDA_DEVICE_ORDER=PCI_BUS_ID
+  export CUDA_VISIBLE_DEVICES=1                       # 只暴露實體 GPU#1
+  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  ```
+## convert dataset
+    python /home/ubuntu/Desktop/Rontgen/dataset_utils/labelme2yolo12seg.py \
+    --input /home/ubuntu/Desktop/Rontgen/dataset/satellite/ \
+    --output /home/ubuntu/Desktop/Rontgen/dataset/satellite/yolodataset \
+    --names /home/ubuntu/Desktop/Rontgen/yolov12/data/satellite-label-names.txt \
+    --val-ratio 0.2 --test-ratio 0.0 --copy
+
+## train @ conda env: Rontgen
+nohup python /home/ubuntu/Desktop/Rontgen/yolov12/train.py \
+  --model /home/ubuntu/Desktop/Rontgen/yolov12/yolov12x-seg.pt \
+  --data /home/ubuntu/Desktop/Rontgen/dataset/satellite/yolodataset/dataset.yaml \
+  --project satellite --name e6_b1_hd \
+  --imgsz 1600 --batch 1  \
+  -- \
+  warmup_epochs=8 \
+  patience=300 close_mosaic=60  \
+  &> logs/satellite_e6_b1_hd.txt &
+
+# satellite EXP 6-hd-a @ ada-6000
+  將影像提高到 1600 訓練並擴增
+  遇到 device 序號問題
+  ```
+  export CUDA_DEVICE_ORDER=PCI_BUS_ID
+  export CUDA_VISIBLE_DEVICES=1                       # 只暴露實體 GPU#1
+  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  ```
+
+## train @ conda env: Rontgen
+nohup python /home/ubuntu/Desktop/Rontgen/yolov12/train.py \
+  --model /home/ubuntu/Desktop/Rontgen/yolov12/yolov12x-seg.pt \
+  --pretrained "" \
+  --data /home/ubuntu/Desktop/Rontgen/dataset/satellite/yolodataset/dataset.yaml \
+  --project satellite --name e6_b1_hd_a \
+  --imgsz 1600 --batch 1 \
+  -- \
+  device=0 warmup_epochs=8 \
+  patience=300 close_mosaic=60  \
+  hsv_h=0.000 hsv_s=0.7 hsv_v=0.4 \
+  degrees=10 translate=0.1 shear=0.0 perspective=0.0 \
+  fliplr=0.0 flipud=0.5 \
+  copy_paste=0.0 \
+  cos_lr=True optimizer=SGD momentum=0.937 weight_decay=0.0005 \
+  &> logs/satellite_e6_b1_hd_a.txt &
