@@ -140,6 +140,7 @@ nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
   &> logs/satellite_e6_b1.txt &
 
 # satellite EXP 6a
+  exp6a 在 exp6 基礎上加入各種擴增方法
 
 ## train @ conda env: Rontgen
 nohup python /home/rtx5090/Documents/Rontgen/yolov12/train.py \
