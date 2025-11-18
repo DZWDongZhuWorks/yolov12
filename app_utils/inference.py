@@ -122,7 +122,7 @@ def annotate_from_results(
     objects = build_objects_from_result(
         result,
         allowed_class_ids=allowed_class_ids,
-        simplify_mode="convex_hull",    # 跟 export_utils 用同一個 mode
+        simplify_mode="rdp",    # 跟 export_utils 用同一個 mode
         simplify_eps_ratio=0.01,
     )
     

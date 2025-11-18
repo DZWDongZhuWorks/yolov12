@@ -3,9 +3,12 @@ import os, json, tempfile
 from typing import Any, Dict, List, Optional
 from .polygon_utils import build_objects_from_result
 
-def _extract_objects(result, allowed_class_ids: Optional[List[int]], simplify_mode, simplify_eps_ratio):
-    # 這裡就不自己拆 masks.xy / bbox 了
-    # 想要使用凸包，就把 simplify_mode 設成 "convex_hull"
+def _extract_objects(
+    result,
+    simplify_mode,
+    simplify_eps_ratio,
+    allowed_class_ids: Optional[List[int]] = None,
+):
     objs = build_objects_from_result(
         result,
         allowed_class_ids=allowed_class_ids,

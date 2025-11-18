@@ -441,36 +441,6 @@ def app():
             outputs=[output_gallery],
         )
 
-        # 標籤模式/框/遮罩/信心值改變時即時重繪
-        for ctrl in (label_mode, show_boxes, show_masks, show_confidence):
-            ctrl.change(
-                fn=replot_all_filtered,
-                inputs=[
-                    last_results,
-                    label_mode,
-                    show_boxes,
-                    show_masks,
-                    show_confidence,
-                    input_type,
-                    class_selector,
-                ],
-                outputs=[output_gallery],
-            )
-
-        # 類別選取改變時即時重繪
-        class_selector.change(
-            fn=replot_all_filtered,
-            inputs=[
-                last_results,
-                label_mode,
-                show_boxes,
-                show_masks,
-                show_confidence,
-                input_type,
-                class_selector,
-            ],
-            outputs=[output_gallery],
-        )
 
         # ======== 全選 / 取消全選 ========
         # 「選擇全選」按鈕：同步更新 Checkbox 與即時重繪
@@ -551,52 +521,8 @@ def app():
             outputs=[class_selector, output_gallery],
         )
 
-        def clear_all_and_replot(
-            last_results_dict,
-            label_mode_in,
-            show_boxes_in,
-            show_masks_in,
-            show_conf_in,
-            input_type_in,
-        ):
-            update_component = gr.update(value=[])
-            gallery = replot_all_filtered(
-                last_results_dict,
-                label_mode_in,
-                show_boxes_in,
-                show_masks_in,
-                show_conf_in,
-                input_type_in,
-                [],
-            )
-            return update_component, gallery
 
-        select_all_btn.click(
-            fn=select_all_and_replot,
-            inputs=[
-                class_choices_state,
-                last_results,
-                label_mode,
-                show_boxes,
-                show_masks,
-                show_confidence,
-                input_type,
-            ],
-            outputs=[class_selector, output_gallery],
-        )
 
-        clear_all_btn.click(
-            fn=clear_all_and_replot,
-            inputs=[
-                last_results,
-                label_mode,
-                show_boxes,
-                show_masks,
-                show_confidence,
-                input_type,
-            ],
-            outputs=[class_selector, output_gallery],
-        )
 
         # ======== 匯出 JSON ========
         def export_json_click(last_results_dict, class_selected_items_in, image_meta):
