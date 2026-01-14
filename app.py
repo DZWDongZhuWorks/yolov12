@@ -14,111 +14,219 @@ from app_utils.inference import (
     yolov12_inference_for_examples,
 )
 from app_utils.export_utils import export_results_cache
+from app_utils.polygon_comparison import create_comparison_images
+from app_utils.visualization_utils import create_metrics_table
 
 
 def app():
     with gr.Blocks() as demo:
         # === 初始模型清單（預設 + 已儲存自訂） ===
         initial_choices, initial_saved_custom = load_model_choices()
-
-        with gr.Row():
-            # ======================= 左側：輸入與控制面板 =======================
-            with gr.Column():
-                # 影像 / 影片輸入
-                image = gr.Image(type="pil", label="Image", visible=True)
-                video = gr.Video(label="Video", visible=False)
-                input_type = gr.Radio(
-                    choices=["Image", "Video"],
-                    value="Image",
-                    label="Input Type",
-                )
-
-                # 記錄自訂模型清單（不包含 DEFAULT_MODELS）
-                saved_models_state = gr.State(value=initial_saved_custom)
-
-                # 多模型 Dropdown（支援自訂、可多選）
-                model_ids = gr.Dropdown(
-                    label="Models (多選比較，最多 5)",
-                    choices=initial_choices,
-                    value=["yolov12m.pt"],
-                    allow_custom_value=True,
-                    multiselect=True,
-                )
-
-                image_size = gr.Slider(
-                    label="Image Size",
-                    minimum=320,
-                    maximum=2560,
-                    step=32,
-                    value=640,
-                )
-                conf_threshold = gr.Slider(
-                    label="Confidence Threshold",
-                    minimum=0.0,
-                    maximum=1.0,
-                    step=0.01,
-                    value=0.25,
-                )
-
-                label_mode = gr.Radio(
-                    choices=["隱藏", "顯示 class id", "顯示 class name"],
-                    value="顯示 class name",
-                    label="標籤模式",
-                )
-                show_boxes = gr.Checkbox(value=True, label="顯示 bbox 外框")
-                show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
-                show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")  # ★ 新增
-                show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
-
-                yolov12_infer = gr.Button(value="Detect Objects (Run)")
-
-                # 匯出 JSON（polygon）
-                export_btn = gr.Button(
-                    value="Export JSON (Polygons)",
-                    variant="primary",
-                )
-                export_files = gr.Files(label="Exported JSON Files")
-
-                # 類別篩選
-                gr.Markdown("### 類別篩選（預設全選）")
-                with gr.Row():
-                    class_selector = gr.CheckboxGroup(
-                        label="類別（ID: 名稱）",
-                        choices=[],
-                        value=[],
-                        interactive=True,
-                    )
-                with gr.Row():
-                    select_all_btn = gr.Button(value="選擇全選", variant="secondary")
-                    clear_all_btn = gr.Button(value="取消全選", variant="secondary")
-
-                # 保留目前 choices 狀態（避免僅從元件讀不到 choices）
-                class_choices_state = gr.State(value=[])
-                # 保存當前影像中繼資訊（檔名、寬高）
-                image_meta_state = gr.State(value=None)
-
-            # ======================= 右側：輸出 =======================
-            with gr.Column():
-                # 影像輸出：Gallery 並排
-                output_gallery = gr.Gallery(
-                    label="Annotated Images（多模型比較）",
-                    columns=2,
-                    preview=True,
-                    visible=True,
-                )
-                # 影片輸出：最多 5 路
-                with gr.Group(visible=False) as video_group:
-                    with gr.Row():
-                        v1 = gr.Video(label="Model #1")
-                        v2 = gr.Video(label="Model #2")
-                    with gr.Row():
-                        v3 = gr.Video(label="Model #3")
-                        v4 = gr.Video(label="Model #4")
-                    v5 = gr.Video(label="Model #5")
-
+        
+        # ==================== 全局 State ====================
         # 快取最後一次「影像」結果（每個模型一份）
         # 型別: Dict[str, results]
         last_results = gr.State(value=None)
+        
+        # 保留目前 choices 狀態（避免僅從元件讀不到 choices）
+        class_choices_state = gr.State(value=[])
+        # 保存當前影像中繼資訊（檔名、寬高）
+        image_meta_state = gr.State(value=None)
+        # 記錄自訂模型清單（不包含 DEFAULT_MODELS）
+        saved_models_state = gr.State(value=initial_saved_custom)
+        
+        # ==================== Tabs ====================
+        with gr.Tabs():
+            # ========== Tab 1: Main Detection ==========
+            with gr.Tab("🎯 Object Detection"):
+                with gr.Row():
+                    # ======================= 左側：輸入與控制面板 =======================
+                    with gr.Column():
+                        # 影像 / 影片輸入
+                        image = gr.Image(type="pil", label="Image", visible=True)
+                        video = gr.Video(label="Video", visible=False)
+                        input_type = gr.Radio(
+                            choices=["Image", "Video"],
+                            value="Image",
+                            label="Input Type",
+                        )
+
+                        # 多模型 Dropdown（支援自訂、可多選）
+                        model_ids = gr.Dropdown(
+                            label="Models (多選比較，最多 5)",
+                            choices=initial_choices,
+                            value=["yolov12m.pt"],
+                            allow_custom_value=True,
+                            multiselect=True,
+                        )
+
+                        image_size = gr.Slider(
+                            label="Image Size",
+                            minimum=320,
+                            maximum=2560,
+                            step=32,
+                            value=640,
+                        )
+                        conf_threshold = gr.Slider(
+                            label="Confidence Threshold",
+                            minimum=0.0,
+                            maximum=1.0,
+                            step=0.01,
+                            value=0.25,
+                        )
+
+                        label_mode = gr.Radio(
+                            choices=["隱藏", "顯示 class id", "顯示 class name"],
+                            value="顯示 class name",
+                            label="標籤模式",
+                        )
+                        show_boxes = gr.Checkbox(value=True, label="顯示 bbox 外框")
+                        show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
+                        show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")  # ★ 新增
+                        show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
+
+                        yolov12_infer = gr.Button(value="Detect Objects (Run)")
+
+                        # 匯出 JSON（polygon）
+                        export_btn = gr.Button(
+                            value="Export JSON (Polygons)",
+                            variant="primary",
+                        )
+                        export_files = gr.Files(label="Exported JSON Files")
+
+                        # 類別篩選
+                        gr.Markdown("### 類別篩選（預設全選）")
+                        with gr.Row():
+                            class_selector = gr.CheckboxGroup(
+                                label="類別（ID: 名稱）",
+                                choices=[],
+                                value=[],
+                                interactive=True,
+                            )
+                        with gr.Row():
+                            select_all_btn = gr.Button(value="選擇全選", variant="secondary")
+                            clear_all_btn = gr.Button(value="取消全選", variant="secondary")
+
+                    # ======================= 右側：輸出 =======================
+                    with gr.Column():
+                        # 影像輸出：Gallery 並排
+                        output_gallery = gr.Gallery(
+                            label="Annotated Images（多模型比較）",
+                            columns=2,
+                            preview=True,
+                            visible=True,
+                        )
+                        # 影片輸出：最多 5 路
+                        with gr.Group(visible=False) as video_group:
+                            with gr.Row():
+                                v1 = gr.Video(label="Model #1")
+                                v2 = gr.Video(label="Model #2")
+                            with gr.Row():
+                                v3 = gr.Video(label="Model #3")
+                                v4 = gr.Video(label="Model #4")
+                            v5 = gr.Video(label="Model #5")
+            
+            # ========== Tab 2: Polygon Optimization Comparison ==========
+            with gr.Tab("🔍 Polygon Optimization"):
+                gr.Markdown("""
+                ### Polygon 優化比較工具
+                
+                使用此工具可以視覺化比較不同 polygon 簡化方法的效果。
+                
+                **使用步驟：**
+                1. 先在「Object Detection」標籤完成一次推論（需要有 mask 的結果）
+                2. 選擇要比較的優化方法
+                3. 調整參數（如 RDP epsilon 值）
+                4. 點擊「Compare Optimizations」查看比較結果
+                
+                **顏色說明：**
+                - 🟢 **淺綠色細線** = 原始 polygon（未簡化）
+                - 🔴 **彩色粗線+填充** = 簡化後的 polygon
+                - ⚪ **白色圓圈** = 簡化後的頂點
+                """)
+                
+                with gr.Row():
+                    # ========== 左側：控制面板 ==========
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 比較設定")
+                        
+                        # 優化方法選擇
+                        comparison_methods = gr.CheckboxGroup(
+                            label="選擇要比較的優化方法",
+                            choices=[
+                                "Original (無簡化)",
+                                "RDP (ε=0.005)",
+                                "RDP (ε=0.01)",
+                                "RDP (ε=0.02)",
+                                "Convex Hull (凸包)",
+                            ],
+                            value=["Original (無簡化)", "RDP (ε=0.01)", "Convex Hull (凸包)"],
+                        )
+                        
+                        # 自訂 RDP epsilon
+                        gr.Markdown("#### 自訂 RDP 參數")
+                        custom_epsilon = gr.Slider(
+                            label="Custom RDP Epsilon",
+                            minimum=0.001,
+                            maximum=0.1,
+                            step=0.001,
+                            value=0.015,
+                        )
+                        use_custom_rdp = gr.Checkbox(
+                            label="加入自訂 RDP 到比較",
+                            value=False,
+                        )
+                        
+                        # 顯示選項
+                        gr.Markdown("#### 視覺化選項")
+                        show_vertices_comp = gr.Checkbox(
+                            label="顯示頂點",
+                            value=True,
+                        )
+                        
+                        # 執行比較按鈕
+                        compare_btn = gr.Button(
+                            value="🔍 Compare Optimizations",
+                            variant="primary",
+                            size="lg",
+                        )
+                        
+                        # 狀態提示
+                        status_text = gr.Markdown("ℹ️ 請先在 Object Detection 標籤完成推論")
+                        
+                        # 導出比較結果
+                        gr.Markdown("---")
+                        export_comparison_btn = gr.Button(
+                            value="💾 Export Comparison Results",
+                            variant="secondary",
+                        )
+                        export_comparison_files = gr.Files(label="Comparison Files")
+                    
+                    # ========== 右側：視覺化輸出 ==========
+                    with gr.Column(scale=2):
+                        gr.Markdown("### 比較結果")
+                        
+                        # 比較圖片 Gallery
+                        comparison_gallery = gr.Gallery(
+                            label="Polygon Optimization Comparison",
+                            columns=2,
+                            rows=2,
+                            height="auto",
+                            preview=True,
+                        )
+                        
+                        # 指標表格
+                        gr.Markdown("### 統計指標")
+                        metrics_table = gr.Markdown("尚無數據")
+                        
+                        # 詳細報告（可摺疊）
+                        with gr.Accordion("📊 詳細比較報告", open=False):
+                            detailed_report = gr.Textbox(
+                                label="Comparison Report",
+                                lines=15,
+                                max_lines=30,
+                                interactive=False,
+                            )
 
         # ======== Input Type 切換：控制元件可視性 ========
         def update_visibility(input_type_val: str):
@@ -550,6 +658,183 @@ def app():
             fn=export_json_click,
             inputs=[last_results, class_selector, image_meta_state],
             outputs=[export_files],
+        )
+
+        # ======== Polygon Optimization Comparison ========
+        def run_polygon_comparison(
+            last_results_dict,
+            selected_methods,
+            use_custom,
+            custom_eps,
+            show_verts,
+            class_selected_items,
+            input_img,
+        ):
+            """執行 polygon 優化比較"""
+            # 檢查是否有推論結果
+            if not last_results_dict or not input_img:
+                return (
+                    [],
+                    "⚠️ 請先在 Object Detection 標籤完成推論",
+                    "無可用數據",
+                    "請先在 Object Detection 標籤完成推論後再使用此功能。",
+                )
+            
+            # 取第一個模型的結果
+            try:
+                first_result = next(iter(last_results_dict.values()))[0]
+            except Exception as e:
+                return (
+                    [],
+                    f"❌ 無法讀取結果: {str(e)}",
+                    "無可用數據",
+                    f"錯誤: {str(e)}",
+                )
+            
+            # 檢查是否有 mask
+            if not hasattr(first_result, "masks") or first_result.masks is None:
+                return (
+                    [],
+                    "⚠️ 此結果沒有 segmentation mask，無法進行 polygon 分析",
+                    "無可用數據",
+                    "請使用支援 segmentation 的模型（如 yolov12*-seg.pt）。",
+                )
+            
+            # 解析類別篩選
+            from app_utils.inference import parse_selected_to_ids
+            selected_ids = parse_selected_to_ids(class_selected_items)
+            if class_selected_items is None:
+                allowed_ids = None
+            elif class_selected_items == []:
+                allowed_ids = []
+            else:
+                allowed_ids = selected_ids
+            
+            # 構建方法列表
+            methods = []
+            method_map = {
+                "Original (無簡化)": ("Original", "none", 0.0),
+                "RDP (ε=0.005)": ("RDP (ε=0.005)", "rdp", 0.005),
+                "RDP (ε=0.01)": ("RDP (ε=0.01)", "rdp", 0.01),
+                "RDP (ε=0.02)": ("RDP (ε=0.02)", "rdp", 0.02),
+                "Convex Hull (凸包)": ("Convex Hull", "convex_hull", 0.0),
+            }
+            
+            for method_str in selected_methods:
+                if method_str in method_map:
+                    methods.append(method_map[method_str])
+            
+            # 加入自訂 RDP
+            if use_custom:
+                methods.append((f"Custom RDP (ε={custom_eps:.3f})", "rdp", custom_eps))
+            
+            if not methods:
+                return (
+                    [],
+                    "⚠️ 請至少選擇一種優化方法",
+                    "無可用數據",
+                    "請在左側選擇至少一種優化方法。",
+                )
+            
+            # 執行比較
+            try:
+                import numpy as np
+                from app_utils.polygon_comparison import generate_comparison_report
+                
+                # 轉換 PIL 到 numpy
+                images, metrics_list = create_comparison_images(
+                    np.array(input_img),
+                    first_result,
+                    methods=methods,
+                    allowed_class_ids=allowed_ids,
+                    show_vertices=show_verts,
+                )
+                
+                # 轉換為 RGB 用於 Gradio Gallery
+                gallery = []
+                for img_bgr, metrics in zip(images, metrics_list):
+                    img_rgb = img_bgr[:, :, ::-1]  # BGR -> RGB
+                    gallery.append((img_rgb, metrics["method"]))
+                
+                # 生成指標表格
+                table = create_metrics_table(metrics_list)
+                
+                # 生成詳細報告
+                report = generate_comparison_report(metrics_list)
+                
+                status = f"✅ 成功比較 {len(methods)} 種優化方法"
+                
+                return gallery, status, table, report
+                
+            except Exception as e:
+                import traceback
+                error_detail = traceback.format_exc()
+                return (
+                    [],
+                    f"❌ 比較過程發生錯誤: {str(e)}",
+                    "無可用數據",
+                    f"錯誤詳情:\n{error_detail}",
+                )
+        
+        compare_btn.click(
+            fn=run_polygon_comparison,
+            inputs=[
+                last_results,
+                comparison_methods,
+                use_custom_rdp,
+                custom_epsilon,
+                show_vertices_comp,
+                class_selector,
+                image,
+            ],
+            outputs=[
+                comparison_gallery,
+                status_text,
+                metrics_table,
+                detailed_report,
+            ],
+        )
+        
+        # ======== Export Comparison Results ========
+        def export_comparison_results(gallery_data, metrics_md, report_text):
+            """導出比較結果"""
+            if not gallery_data:
+                return []
+            
+            import tempfile
+            import json
+            import cv2
+            from pathlib import Path
+            
+            temp_dir = Path(tempfile.mkdtemp(prefix="polygon_comparison_"))
+            files = []
+            
+            # 1. 保存所有比較圖片
+            for idx, (img_data, caption) in enumerate(gallery_data):
+                # img_data 是 numpy array (RGB)
+                img_bgr = img_data[:, :, ::-1]  # RGB -> BGR
+                img_path = temp_dir / f"comparison_{idx}_{caption.replace(' ', '_')}.png"
+                cv2.imwrite(str(img_path), img_bgr)
+                files.append(str(img_path))
+            
+            # 2. 保存詳細報告
+            report_path = temp_dir / "comparison_report.txt"
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(report_text)
+            files.append(str(report_path))
+            
+            # 3. 保存指標（Markdown 和 JSON）
+            metrics_md_path = temp_dir / "metrics.md"
+            with open(metrics_md_path, "w", encoding="utf-8") as f:
+                f.write(metrics_md)
+            files.append(str(metrics_md_path))
+            
+            return files
+        
+        export_comparison_btn.click(
+            fn=export_comparison_results,
+            inputs=[comparison_gallery, metrics_table, detailed_report],
+            outputs=[export_comparison_files],
         )
 
         # ======== 範例（Examples） ========
