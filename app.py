@@ -60,6 +60,12 @@ def app():
                     step=0.01,
                     value=0.25,
                 )
+                device_select = gr.Dropdown(
+                    label="Device",
+                    choices=["auto", "cpu", "cuda:0", "cuda:1", "mps"],
+                    value="auto",
+                    allow_custom_value=True,
+                )
 
                 label_mode = gr.Radio(
                     choices=["隱藏", "顯示 class id", "顯示 class name"],
@@ -156,6 +162,7 @@ def app():
             model_ids_in,
             image_size_in,
             conf_th_in,
+            device_in,
             input_type_in,
             label_mode_in,
             show_boxes_in,
@@ -224,6 +231,7 @@ def app():
                     mids,
                     image_size_in,
                     conf_th_in,
+                    None if device_in == "auto" else device_in,
                     label_mode_in,
                     show_boxes_in,
                     show_masks_in,
@@ -337,6 +345,7 @@ def app():
                     mids,
                     image_size_in,
                     conf_th_in,
+                    None if device_in == "auto" else device_in,
                     label_mode_in,
                     show_boxes_in,
                     show_masks_in,
@@ -375,6 +384,7 @@ def app():
                 model_ids,
                 image_size,
                 conf_threshold,
+                device_select,
                 input_type,
                 label_mode,
                 show_boxes,

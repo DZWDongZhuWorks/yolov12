@@ -140,6 +140,8 @@ def annotate_from_results(
             for seg in polys:
                 pts = np.asarray(seg, dtype=np.int32).reshape(-1, 1, 2)
                 cv2.polylines(base, [pts], isClosed=True, color=color, thickness=2)
+                for x, y in np.asarray(seg, dtype=np.int32):
+                    cv2.circle(base, (int(x), int(y)), radius=3, color=color, thickness=1)
     # ---- 再畫 label ----
     if label_mode == "隱藏":
         return base
@@ -292,6 +294,7 @@ def infer_image_single(
     image,
     image_size: int,
     conf_threshold: float,
+    device: Optional[str],
     label_mode: str,
     show_boxes: bool,
     show_masks: bool,
@@ -302,7 +305,10 @@ def infer_image_single(
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
-    results = model.predict(source=image, imgsz=image_size, conf=conf_threshold)
+    predict_kwargs = {"source": image, "imgsz": image_size, "conf": conf_threshold}
+    if device:
+        predict_kwargs["device"] = device
+    results = model.predict(**predict_kwargs)
     annotated_bgr = annotate_from_results(
         results[0],
         label_mode,
@@ -323,6 +329,7 @@ def infer_video_single(
     video_path: str,
     image_size: int,
     conf_threshold: float,
+    device: Optional[str],
     label_mode: str,
     show_boxes: bool,
     show_masks: bool,
@@ -351,7 +358,10 @@ def infer_video_single(
         ret, frame = cap.read()
         if not ret:
             break
-        results = model.predict(source=frame, imgsz=image_size, conf=conf_threshold)
+        predict_kwargs = {"source": frame, "imgsz": image_size, "conf": conf_threshold}
+        if device:
+            predict_kwargs["device"] = device
+        results = model.predict(**predict_kwargs)
         annotated_bgr = annotate_from_results(
             results[0],
             label_mode,
@@ -375,6 +385,7 @@ def yolov12_multi_inference_image(
     model_ids: List[str],
     image_size: int,
     conf_threshold: float,
+    device: Optional[str],
     label_mode: str,
     show_boxes: bool,
     show_masks: bool,
@@ -399,6 +410,7 @@ def yolov12_multi_inference_image(
             image,
             image_size,
             conf_threshold,
+            device,
             label_mode,
             show_boxes,
             show_masks,
@@ -419,6 +431,7 @@ def yolov12_multi_inference_video(
     model_ids: List[str],
     image_size: int,
     conf_threshold: float,
+    device: Optional[str],
     label_mode: str,
     show_boxes: bool,
     show_masks: bool,
@@ -445,6 +458,7 @@ def yolov12_multi_inference_video(
             src_path,
             image_size,
             conf_threshold,
+            device,
             label_mode,
             show_boxes,
             show_masks,
@@ -485,6 +499,7 @@ def yolov12_inference_for_examples(
         model_ids,
         image_size,
         conf_threshold,
+        None,
         label_mode,
         show_boxes,
         show_masks,
