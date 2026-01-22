@@ -82,12 +82,12 @@ def app():
                     value="rdp",
                     label="Polygon Simplify Mode",
                 )
-                simplify_eps_ratio = gr.Slider(
-                    label="Polygon Simplify Epsilon Ratio",
-                    minimum=0.0,
-                    maximum=0.1,
-                    step=0.001,
-                    value=0.01,
+                simplify_eps_coeff = gr.Slider(
+                    label="Polygon Simplify Epsilon Coefficient (Base ratio 0.01)",
+                    minimum=0.1,
+                    maximum=5.0,
+                    step=0.1,
+                    value=1.0,
                 )
 
                 yolov12_infer = gr.Button(value="Detect Objects (Run)")
@@ -171,7 +171,7 @@ def app():
             show_conf_in,
             contour_split_in,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
             saved_models_in,
             class_selected_items_in,
             class_choices_in,
@@ -238,7 +238,7 @@ def app():
                     show_polygons_in, 
                     show_conf_in,
                     simplify_mode_in,
-                    simplify_eps_ratio_in,
+                    simplify_eps_coeff_in,
                     allowed_class_ids=allowed_ids,
                 )
 
@@ -352,7 +352,7 @@ def app():
                     show_polygons_in, 
                     show_conf_in,
                     simplify_mode_in,
-                    simplify_eps_ratio_in,
+                    simplify_eps_coeff_in,
                     allowed_class_ids=allowed_ids,
                 )
 
@@ -393,7 +393,7 @@ def app():
                 show_confidence,
                 contour_split,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
                 saved_models_state,
                 class_selector,
                 class_choices_state,
@@ -424,7 +424,7 @@ def app():
             show_polygons_in,
             show_conf_in,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
             input_type_in,
             class_selected_items_in,
         ):
@@ -450,7 +450,7 @@ def app():
                     show_polygons_in,
                     show_conf_in,
                     simplify_mode_in,
-                    simplify_eps_ratio_in,
+                    simplify_eps_coeff_in,
                     allowed_ids,
                 )
                 gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
@@ -465,7 +465,7 @@ def app():
             show_polygons,
             show_confidence,
             polygon_simplify,
-            simplify_eps_ratio,
+            simplify_eps_coeff,
         ):
             ctrl.change(
                 fn=replot_all_filtered,
@@ -477,7 +477,7 @@ def app():
                     show_polygons,
                     show_confidence,
                     polygon_simplify,
-                    simplify_eps_ratio,
+                    simplify_eps_coeff,
                     input_type,
                     class_selector,
                 ],
@@ -495,7 +495,7 @@ def app():
                 show_polygons,
                 show_confidence,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
                 input_type,
                 class_selector,
             ],
@@ -511,7 +511,7 @@ def app():
             show_polygons_in,
             show_conf_in,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
             input_type_in,
             class_selected_items_in,
         ):
@@ -531,7 +531,7 @@ def app():
                 show_polygons_in,
                 show_conf_in,
                 simplify_mode_in,
-                simplify_eps_ratio_in,
+                simplify_eps_coeff_in,
                 input_type_in,
                 class_selected_items_in,
             )
@@ -548,7 +548,7 @@ def app():
                 show_polygons,
                 show_confidence,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
                 input_type,
                 class_selector,
             ],
@@ -567,7 +567,7 @@ def app():
             show_polygons_in,
             show_conf_in,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
             input_type_in,
         ):
             # 將值設為目前 choices（全選）
@@ -581,7 +581,7 @@ def app():
                 show_polygons_in,
                 show_conf_in,
                 simplify_mode_in,
-                simplify_eps_ratio_in,
+                simplify_eps_coeff_in,
                 input_type_in,
                 class_choices_in or [],
             )
@@ -598,7 +598,7 @@ def app():
                 show_polygons,
                 show_confidence,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
                 input_type,
             ],
             outputs=[class_selector, output_gallery],
@@ -613,7 +613,7 @@ def app():
             show_polygons_in,
             show_conf_in,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
             input_type_in,
         ):
             update_component = gr.update(value=[])
@@ -625,7 +625,7 @@ def app():
                 show_polygons_in,
                 show_conf_in,
                 simplify_mode_in,
-                simplify_eps_ratio_in,
+                simplify_eps_coeff_in,
                 input_type_in,
                 [],
             )
@@ -641,7 +641,7 @@ def app():
                 show_polygons,
                 show_confidence,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
                 input_type,
             ],
             outputs=[class_selector, output_gallery],
@@ -656,7 +656,7 @@ def app():
             class_selected_items_in,
             image_meta,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
         ):
             # 僅支援影像模式（因影片逐幀 polygon 通常會很大）
             if not last_results_dict or not image_meta:
@@ -676,7 +676,7 @@ def app():
                 out_dir=None,
                 allowed_class_ids=allowed_ids,
                 simplify_mode=simplify_mode_in,
-                simplify_eps_ratio=simplify_eps_ratio_in,
+                simplify_eps_coeff=simplify_eps_coeff_in,
             )
             return files
 
@@ -687,7 +687,7 @@ def app():
                 class_selector,
                 image_meta_state,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
             ],
             outputs=[export_files],
         )

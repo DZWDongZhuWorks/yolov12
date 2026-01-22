@@ -106,7 +106,7 @@ def annotate_from_results(
     show_polygons: bool,
     show_confidence: bool,
     simplify_mode: str,
-    simplify_eps_ratio: float,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]] = None,
 ):
     """
@@ -127,7 +127,7 @@ def annotate_from_results(
         result,
         allowed_class_ids=allowed_class_ids,
         simplify_mode=simplify_mode,
-        simplify_eps_ratio=simplify_eps_ratio,
+        simplify_eps_coeff=simplify_eps_coeff,
     )
     
     # ---- 先畫 polygon 邊界（如果有 mask） ----
@@ -306,7 +306,7 @@ def infer_image_single(
     show_polygons: bool,
     show_confidence: bool,
     simplify_mode: str,
-    simplify_eps_ratio: float,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
@@ -322,7 +322,7 @@ def infer_image_single(
         show_polygons,
         show_confidence,
         simplify_mode,
-        simplify_eps_ratio,
+        simplify_eps_coeff,
         allowed_class_ids,
     )
     # Gradio Image 用 RGB
@@ -341,7 +341,7 @@ def infer_video_single(
     show_polygons: bool,
     show_confidence: bool,
     simplify_mode: str,
-    simplify_eps_ratio: float,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
@@ -375,7 +375,7 @@ def infer_video_single(
             show_polygons,
             show_confidence,
             simplify_mode,
-            simplify_eps_ratio,
+            simplify_eps_coeff,
             allowed_class_ids,
         )
         out.write(annotated_bgr)
@@ -397,7 +397,7 @@ def yolov12_multi_inference_image(
     show_polygons: bool,
     show_confidence: bool,
     simplify_mode: str,
-    simplify_eps_ratio: float,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
 ):
     """
@@ -422,7 +422,7 @@ def yolov12_multi_inference_image(
             show_polygons,
             show_confidence,
             simplify_mode,
-            simplify_eps_ratio,
+            simplify_eps_coeff,
             allowed_class_ids,
         )
         gallery_items.append((img_rgb, mid))
@@ -443,7 +443,7 @@ def yolov12_multi_inference_video(
     show_polygons: bool,
     show_confidence: bool,
     simplify_mode: str,
-    simplify_eps_ratio: float,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
 ):
     """
@@ -470,7 +470,7 @@ def yolov12_multi_inference_video(
             show_polygons,
             show_confidence,
             simplify_mode,
-            simplify_eps_ratio,
+            simplify_eps_coeff,
             allowed_class_ids,
         )
         outs.append((mid, out_path))
