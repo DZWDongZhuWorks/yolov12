@@ -141,7 +141,7 @@ def annotate_from_results(
                 pts = np.asarray(seg, dtype=np.int32).reshape(-1, 1, 2)
                 cv2.polylines(base, [pts], isClosed=True, color=color, thickness=2)
                 for x, y in np.asarray(seg, dtype=np.int32):
-                    cv2.circle(base, (int(x), int(y)), radius=3, color=color, thickness=1)
+                    cv2.circle(base, (int(x), int(y)), radius=3, color=(255, 255, 255), thickness=1)
     # ---- 再畫 label ----
     if label_mode == "隱藏":
         return base
