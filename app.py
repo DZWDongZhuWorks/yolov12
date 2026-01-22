@@ -89,6 +89,28 @@ def app():
                     step=0.001,
                     value=0.01,
                 )
+                polygon_optimize = gr.CheckboxGroup(
+                    label="Polygon Optimization Options",
+                    choices=[
+                        "mask_open_close",
+                        "mask_blur",
+                        "mask_remove_small",
+                        "mask_fill_holes",
+                        "contour_simple",
+                        "contour_rdp",
+                        "contour_external",
+                        "polygon_collinear",
+                        "polygon_snap",
+                    ],
+                    value=[],
+                )
+                snap_grid_size = gr.Slider(
+                    label="Polygon Snap Grid Size (px)",
+                    minimum=0.0,
+                    maximum=10.0,
+                    step=0.5,
+                    value=0.0,
+                )
 
                 yolov12_infer = gr.Button(value="Detect Objects (Run)")
 
@@ -172,6 +194,8 @@ def app():
             contour_split_in,
             simplify_mode_in,
             simplify_eps_ratio_in,
+            polygon_optimize_in,
+            snap_grid_size_in,
             saved_models_in,
             class_selected_items_in,
             class_choices_in,
@@ -239,6 +263,8 @@ def app():
                     show_conf_in,
                     simplify_mode_in,
                     simplify_eps_ratio_in,
+                    polygon_optimize_in,
+                    snap_grid_size_in,
                     allowed_class_ids=allowed_ids,
                 )
 
@@ -353,6 +379,8 @@ def app():
                     show_conf_in,
                     simplify_mode_in,
                     simplify_eps_ratio_in,
+                    polygon_optimize_in,
+                    snap_grid_size_in,
                     allowed_class_ids=allowed_ids,
                 )
 
@@ -394,6 +422,8 @@ def app():
                 contour_split,
                 polygon_simplify,
                 simplify_eps_ratio,
+                polygon_optimize,
+                snap_grid_size,
                 saved_models_state,
                 class_selector,
                 class_choices_state,
@@ -425,6 +455,8 @@ def app():
             show_conf_in,
             simplify_mode_in,
             simplify_eps_ratio_in,
+            polygon_optimize_in,
+            snap_grid_size_in,
             input_type_in,
             class_selected_items_in,
         ):
@@ -451,6 +483,8 @@ def app():
                     show_conf_in,
                     simplify_mode_in,
                     simplify_eps_ratio_in,
+                    polygon_optimize_in,
+                    snap_grid_size_in,
                     allowed_ids,
                 )
                 gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
@@ -466,6 +500,8 @@ def app():
             show_confidence,
             polygon_simplify,
             simplify_eps_ratio,
+            polygon_optimize,
+            snap_grid_size,
         ):
             ctrl.change(
                 fn=replot_all_filtered,
@@ -478,6 +514,8 @@ def app():
                     show_confidence,
                     polygon_simplify,
                     simplify_eps_ratio,
+                    polygon_optimize,
+                    snap_grid_size,
                     input_type,
                     class_selector,
                 ],
@@ -496,6 +534,8 @@ def app():
                 show_confidence,
                 polygon_simplify,
                 simplify_eps_ratio,
+                polygon_optimize,
+                snap_grid_size,
                 input_type,
                 class_selector,
             ],
@@ -512,6 +552,8 @@ def app():
             show_conf_in,
             simplify_mode_in,
             simplify_eps_ratio_in,
+            polygon_optimize_in,
+            snap_grid_size_in,
             input_type_in,
             class_selected_items_in,
         ):
@@ -532,6 +574,8 @@ def app():
                 show_conf_in,
                 simplify_mode_in,
                 simplify_eps_ratio_in,
+                polygon_optimize_in,
+                snap_grid_size_in,
                 input_type_in,
                 class_selected_items_in,
             )
@@ -549,6 +593,8 @@ def app():
                 show_confidence,
                 polygon_simplify,
                 simplify_eps_ratio,
+                polygon_optimize,
+                snap_grid_size,
                 input_type,
                 class_selector,
             ],
@@ -568,6 +614,8 @@ def app():
             show_conf_in,
             simplify_mode_in,
             simplify_eps_ratio_in,
+            polygon_optimize_in,
+            snap_grid_size_in,
             input_type_in,
         ):
             # 將值設為目前 choices（全選）
@@ -582,6 +630,8 @@ def app():
                 show_conf_in,
                 simplify_mode_in,
                 simplify_eps_ratio_in,
+                polygon_optimize_in,
+                snap_grid_size_in,
                 input_type_in,
                 class_choices_in or [],
             )
@@ -599,6 +649,8 @@ def app():
                 show_confidence,
                 polygon_simplify,
                 simplify_eps_ratio,
+                polygon_optimize,
+                snap_grid_size,
                 input_type,
             ],
             outputs=[class_selector, output_gallery],
@@ -614,6 +666,8 @@ def app():
             show_conf_in,
             simplify_mode_in,
             simplify_eps_ratio_in,
+            polygon_optimize_in,
+            snap_grid_size_in,
             input_type_in,
         ):
             update_component = gr.update(value=[])
@@ -626,6 +680,8 @@ def app():
                 show_conf_in,
                 simplify_mode_in,
                 simplify_eps_ratio_in,
+                polygon_optimize_in,
+                snap_grid_size_in,
                 input_type_in,
                 [],
             )
@@ -642,6 +698,8 @@ def app():
                 show_confidence,
                 polygon_simplify,
                 simplify_eps_ratio,
+                polygon_optimize,
+                snap_grid_size,
                 input_type,
             ],
             outputs=[class_selector, output_gallery],
@@ -657,6 +715,8 @@ def app():
             image_meta,
             simplify_mode_in,
             simplify_eps_ratio_in,
+            polygon_optimize_in,
+            snap_grid_size_in,
         ):
             # 僅支援影像模式（因影片逐幀 polygon 通常會很大）
             if not last_results_dict or not image_meta:
@@ -677,6 +737,8 @@ def app():
                 allowed_class_ids=allowed_ids,
                 simplify_mode=simplify_mode_in,
                 simplify_eps_ratio=simplify_eps_ratio_in,
+                optimize_options=polygon_optimize_in,
+                snap_grid_size=snap_grid_size_in,
             )
             return files
 
@@ -688,6 +750,8 @@ def app():
                 image_meta_state,
                 polygon_simplify,
                 simplify_eps_ratio,
+                polygon_optimize,
+                snap_grid_size,
             ],
             outputs=[export_files],
         )

@@ -107,6 +107,8 @@ def annotate_from_results(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_ratio: float,
+    optimize_options: Optional[List[str]],
+    snap_grid_size: float,
     allowed_class_ids: Optional[List[int]] = None,
 ):
     """
@@ -128,6 +130,8 @@ def annotate_from_results(
         allowed_class_ids=allowed_class_ids,
         simplify_mode=simplify_mode,
         simplify_eps_ratio=simplify_eps_ratio,
+        optimize_options=optimize_options,
+        snap_grid_size=snap_grid_size,
     )
     
     # ---- 先畫 polygon 邊界（如果有 mask） ----
@@ -302,6 +306,8 @@ def infer_image_single(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_ratio: float,
+    optimize_options: Optional[List[str]],
+    snap_grid_size: float,
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
@@ -318,6 +324,8 @@ def infer_image_single(
         show_confidence,
         simplify_mode,
         simplify_eps_ratio,
+        optimize_options,
+        snap_grid_size,
         allowed_class_ids,
     )
     # Gradio Image 用 RGB
@@ -337,6 +345,8 @@ def infer_video_single(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_ratio: float,
+    optimize_options: Optional[List[str]],
+    snap_grid_size: float,
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
@@ -371,6 +381,8 @@ def infer_video_single(
             show_confidence,
             simplify_mode,
             simplify_eps_ratio,
+            optimize_options,
+            snap_grid_size,
             allowed_class_ids,
         )
         out.write(annotated_bgr)
@@ -393,6 +405,8 @@ def yolov12_multi_inference_image(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_ratio: float,
+    optimize_options: Optional[List[str]],
+    snap_grid_size: float,
     allowed_class_ids: Optional[List[int]],
 ):
     """
@@ -418,6 +432,8 @@ def yolov12_multi_inference_image(
             show_confidence,
             simplify_mode,
             simplify_eps_ratio,
+            optimize_options,
+            snap_grid_size,
             allowed_class_ids,
         )
         gallery_items.append((img_rgb, mid))
@@ -439,6 +455,8 @@ def yolov12_multi_inference_video(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_ratio: float,
+    optimize_options: Optional[List[str]],
+    snap_grid_size: float,
     allowed_class_ids: Optional[List[int]],
 ):
     """
@@ -466,6 +484,8 @@ def yolov12_multi_inference_video(
             show_confidence,
             simplify_mode,
             simplify_eps_ratio,
+            optimize_options,
+            snap_grid_size,
             allowed_class_ids,
         )
         outs.append((mid, out_path))
@@ -507,6 +527,8 @@ def yolov12_inference_for_examples(
         True,   # show_confidence
         "rdp",
         0.01,
+        [],
+        0.0,
         allowed_class_ids=None,
     )
     return gallery
