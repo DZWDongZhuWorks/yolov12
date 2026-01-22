@@ -10,6 +10,7 @@ from app_utils.inference import (
     parse_selected_to_ids,
     annotate_from_results,
     apply_connection_contour_split,
+    apply_mask_optimizations_cache,
     yolov12_multi_inference_image,
     yolov12_multi_inference_video,
     yolov12_inference_for_examples,
@@ -77,6 +78,53 @@ def app():
                 show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")  # ★ 新增
                 show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
                 contour_split = gr.Checkbox(value=False, label="Connection Contour Split")
+                gr.Markdown("### Mask Optimization")
+                mask_opt_methods = gr.CheckboxGroup(
+                    choices=[
+                        "Morph Open",
+                        "Morph Close",
+                        "Blur + Threshold",
+                        "Remove Small Components",
+                        "Fill Small Holes",
+                    ],
+                    value=[],
+                    label="Mask Optimization Methods",
+                )
+                morph_kernel_size = gr.Slider(
+                    label="Morph Kernel Size (odd)",
+                    minimum=1,
+                    maximum=15,
+                    step=2,
+                    value=3,
+                )
+                blur_kernel_size = gr.Slider(
+                    label="Blur Kernel Size (odd)",
+                    minimum=1,
+                    maximum=15,
+                    step=2,
+                    value=3,
+                )
+                blur_threshold = gr.Slider(
+                    label="Blur Threshold",
+                    minimum=0.1,
+                    maximum=0.9,
+                    step=0.05,
+                    value=0.5,
+                )
+                min_component_area = gr.Slider(
+                    label="Min Component Area",
+                    minimum=0,
+                    maximum=5000,
+                    step=50,
+                    value=0,
+                )
+                max_hole_area = gr.Slider(
+                    label="Max Hole Area",
+                    minimum=0,
+                    maximum=5000,
+                    step=50,
+                    value=0,
+                )
                 polygon_simplify = gr.Radio(
                     choices=["none", "convex_hull", "rdp"],
                     value="rdp",
@@ -156,6 +204,47 @@ def app():
         )
 
         # ======== 主推論函式 ========
+        def replot_all_filtered(
+            last_results_dict,
+            label_mode_in,
+            show_boxes_in,
+            show_masks_in,
+            show_polygons_in,
+            show_conf_in,
+            simplify_mode_in,
+            simplify_eps_coeff_in,
+            input_type_in,
+            class_selected_items_in,
+        ):
+            if input_type_in != "Image" or not last_results_dict:
+                return gr.update()
+
+            # 解析類別
+            selected_ids = parse_selected_to_ids(class_selected_items_in)
+            if class_selected_items_in is None:
+                allowed_ids = None
+            elif class_selected_items_in == []:
+                allowed_ids = []
+            else:
+                allowed_ids = selected_ids
+
+            gallery = []
+            for mid, results in last_results_dict.items():
+                annotated_bgr = annotate_from_results(
+                    results[0],
+                    label_mode_in,
+                    show_boxes_in,
+                    show_masks_in,
+                    show_polygons_in,
+                    show_conf_in,
+                    simplify_mode_in,
+                    simplify_eps_coeff_in,
+                    allowed_ids,
+                )
+                gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
+
+            return gallery
+
         def run_inference(
             image_in,
             video_in,
@@ -170,6 +259,12 @@ def app():
             show_polygons_in, 
             show_conf_in,
             contour_split_in,
+            mask_opt_methods_in,
+            morph_kernel_size_in,
+            blur_kernel_size_in,
+            blur_threshold_in,
+            min_component_area_in,
+            max_hole_area_in,
             simplify_mode_in,
             simplify_eps_coeff_in,
             saved_models_in,
@@ -226,7 +321,7 @@ def app():
                     )
 
                 # 4-1) 多模型推論
-                gallery, results_cache = yolov12_multi_inference_image(
+                gallery, results_cache, raw_results_cache = yolov12_multi_inference_image(
                     image_in,
                     mids,
                     image_size_in,
@@ -239,12 +334,29 @@ def app():
                     show_conf_in,
                     simplify_mode_in,
                     simplify_eps_coeff_in,
+                    mask_opt_methods_in,
+                    morph_kernel_size_in,
+                    blur_kernel_size_in,
+                    blur_threshold_in,
+                    min_component_area_in,
+                    max_hole_area_in,
                     allowed_class_ids=allowed_ids,
                 )
 
-                raw_results_cache = results_cache
                 if contour_split_in:
                     results_cache = apply_connection_contour_split(results_cache)
+                    gallery = replot_all_filtered(
+                        results_cache,
+                        label_mode_in,
+                        show_boxes_in,
+                        show_masks_in,
+                        show_polygons_in,
+                        show_conf_in,
+                        simplify_mode_in,
+                        simplify_eps_coeff_in,
+                        input_type_in,
+                        class_selected_items_in,
+                    )
 
                 # 4-2) 從第一個結果建立類別選單
                 try:
@@ -353,6 +465,12 @@ def app():
                     show_conf_in,
                     simplify_mode_in,
                     simplify_eps_coeff_in,
+                    mask_opt_methods_in,
+                    morph_kernel_size_in,
+                    blur_kernel_size_in,
+                    blur_threshold_in,
+                    min_component_area_in,
+                    max_hole_area_in,
                     allowed_class_ids=allowed_ids,
                 )
 
@@ -391,12 +509,18 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
-                contour_split,
-                polygon_simplify,
-                simplify_eps_coeff,
-                saved_models_state,
-                class_selector,
-                class_choices_state,
+            contour_split,
+            mask_opt_methods,
+            morph_kernel_size,
+            blur_kernel_size,
+            blur_threshold,
+            min_component_area,
+            max_hole_area,
+            polygon_simplify,
+            simplify_eps_coeff,
+            saved_models_state,
+            class_selector,
+            class_choices_state,
             ],
             outputs=[
                 output_gallery,
@@ -416,47 +540,6 @@ def app():
         )
 
         # ======== 即時重繪（只針對 Image 模式） ========
-        def replot_all_filtered(
-            last_results_dict,
-            label_mode_in,
-            show_boxes_in,
-            show_masks_in,
-            show_polygons_in,
-            show_conf_in,
-            simplify_mode_in,
-            simplify_eps_coeff_in,
-            input_type_in,
-            class_selected_items_in,
-        ):
-            if input_type_in != "Image" or not last_results_dict:
-                return gr.update()
-
-            # 解析類別
-            selected_ids = parse_selected_to_ids(class_selected_items_in)
-            if class_selected_items_in is None:
-                allowed_ids = None
-            elif class_selected_items_in == []:
-                allowed_ids = []
-            else:
-                allowed_ids = selected_ids
-
-            gallery = []
-            for mid, results in last_results_dict.items():
-                annotated_bgr = annotate_from_results(
-                    results[0],
-                    label_mode_in,
-                    show_boxes_in,
-                    show_masks_in,
-                    show_polygons_in,
-                    show_conf_in,
-                    simplify_mode_in,
-                    simplify_eps_coeff_in,
-                    allowed_ids,
-                )
-                gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
-
-            return gallery
-
         # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪
         for ctrl in (
             label_mode,
@@ -502,8 +585,14 @@ def app():
             outputs=[output_gallery],
         )
 
-        def toggle_contour_split(
+        def apply_mask_postprocess(
             raw_results_dict,
+            mask_opt_methods_in,
+            morph_kernel_size_in,
+            blur_kernel_size_in,
+            blur_threshold_in,
+            min_component_area_in,
+            max_hole_area_in,
             contour_split_in,
             label_mode_in,
             show_boxes_in,
@@ -518,10 +607,18 @@ def app():
             if not raw_results_dict:
                 return None, gr.update()
 
+            updated_results = apply_mask_optimizations_cache(
+                raw_results_dict,
+                mask_opt_methods_in or [],
+                int(morph_kernel_size_in),
+                int(blur_kernel_size_in),
+                float(blur_threshold_in),
+                int(min_component_area_in),
+                int(max_hole_area_in),
+            )
+
             if contour_split_in:
-                updated_results = apply_connection_contour_split(raw_results_dict)
-            else:
-                updated_results = raw_results_dict
+                updated_results = apply_connection_contour_split(updated_results)
 
             gallery = replot_all_filtered(
                 updated_results,
@@ -538,9 +635,15 @@ def app():
             return updated_results, gallery
 
         contour_split.change(
-            fn=toggle_contour_split,
+            fn=apply_mask_postprocess,
             inputs=[
                 raw_results,
+                mask_opt_methods,
+                morph_kernel_size,
+                blur_kernel_size,
+                blur_threshold,
+                min_component_area,
+                max_hole_area,
                 contour_split,
                 label_mode,
                 show_boxes,
@@ -554,6 +657,38 @@ def app():
             ],
             outputs=[last_results, output_gallery],
         )
+
+        for ctrl in (
+            mask_opt_methods,
+            morph_kernel_size,
+            blur_kernel_size,
+            blur_threshold,
+            min_component_area,
+            max_hole_area,
+        ):
+            ctrl.change(
+                fn=apply_mask_postprocess,
+                inputs=[
+                    raw_results,
+                    mask_opt_methods,
+                    morph_kernel_size,
+                    blur_kernel_size,
+                    blur_threshold,
+                    min_component_area,
+                    max_hole_area,
+                    contour_split,
+                    label_mode,
+                    show_boxes,
+                    show_masks,
+                    show_polygons,
+                    show_confidence,
+                    polygon_simplify,
+                    simplify_eps_coeff,
+                    input_type,
+                    class_selector,
+                ],
+                outputs=[last_results, output_gallery],
+            )
 
 
         # ======== 全選 / 取消全選 ========
