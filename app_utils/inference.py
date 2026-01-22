@@ -1,6 +1,7 @@
 # app_utils/inference.py
 
 import copy
+import torch
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -104,6 +105,7 @@ def annotate_from_results(
     show_polygons: bool,
     show_confidence: bool,
     allowed_class_ids: Optional[List[int]] = None,
+    split_components: bool = False,
 ):
     """
     使用 Ultralytics 的 plot 畫基礎層（bbox / mask），
@@ -114,16 +116,20 @@ def annotate_from_results(
     回傳 BGR 影像。
     """
     # 先做類別篩選
+    # ★ 強制確保輸入結果在 CPU 上，避免 plot() 觸發 GPU 運算
+    result = result.cpu()
     filtered = filter_result_by_classes(result, allowed_class_ids)
 
-    # Ultralytics 內建繪製框 / mask（labels 關掉，自己畫）
-    base = filtered.plot(labels=False, boxes=show_boxes, masks=show_masks)
+    # Ultralytics 內建繪製 mask；框和標籤我們後面自己根據 objects 決定如何畫
+    # 如果 split_components=True，YOLO 內建的 boxes 會包得太大，所以必須關掉
+    base = filtered.plot(labels=False, boxes=(show_boxes and not split_components), masks=show_masks)
     
     objects = build_objects_from_result(
         result,
         allowed_class_ids=allowed_class_ids,
         simplify_mode="rdp",    # 跟 export_utils 用同一個 mode
         simplify_eps_ratio=0.01,
+        split_components=split_components,
     )
     
     # ---- 先畫 polygon 邊界（如果有 mask） ----
@@ -137,9 +143,12 @@ def annotate_from_results(
                 pts = np.asarray(seg, dtype=np.int32).reshape(-1, 1, 2)
                 cv2.polylines(base, [pts], isClosed=True, color=color, thickness=2)
     # ---- 再畫 label ----
-    if label_mode == "隱藏":
-        return base
-    if not hasattr(filtered, "boxes") or filtered.boxes is None or len(filtered.boxes) == 0:
+    if label_mode == "隱藏" and not (show_boxes and split_components):
+        # 如果不顯示標籤，且也不需要手動畫 split 框，就直接回傳
+        if not (show_boxes and split_components):
+            return base
+
+    if not objects:
         return base
 
     names = getattr(result, "names", None) or {}
@@ -152,23 +161,34 @@ def annotate_from_results(
         conf_arr = filtered.boxes.conf.cpu().numpy()
     except Exception:
         pass
-
+    
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.5
     thickness = 1
     pad = 3
 
-    for i, ((x1, y1, x2, y2), cid) in enumerate(zip(xyxy, cls_arr)):
-        x1, y1 = int(x1), int(y1)
+    for i, obj in enumerate(objects):
+        cid = obj["class_id"]
+        conf = obj["confidence"]
+        x1, y1, x2, y2 = [int(v) for v in obj["bbox_xyxy"]]
+
+        # 取得顏色
+        c_bgr = tuple(int(v) for v in ucolors(cid, bgr=True))
+
+        # ---- 如果是 split 模式，且要顯示框，則手畫 BBox ----
+        if split_components and show_boxes:
+            cv2.rectangle(base, (x1, y1), (x2, y2), c_bgr, 2)
+
+        if label_mode == "隱藏":
+            continue
 
         # 基本標籤（ID 或 Name）
         base_text = f"{cid}" if label_mode == "顯示 class id" else names.get(cid, str(cid))
 
         # 需要的話加上 conf
-        if show_confidence and conf_arr is not None and i < len(conf_arr):
-            base_text = f"{base_text} {conf_arr[i]:.2f}"
+        if show_confidence and conf is not None:
+            base_text = f"{base_text} {conf:.2f}"
 
-        c_bgr = tuple(int(v) for v in ucolors(cid, bgr=True))
         (tw, th), baseline = cv2.getTextSize(base_text, font, font_scale, thickness)
         y_top = max(0, y1 - th - 2 * pad)
 
@@ -201,9 +221,26 @@ def infer_image_single(
     show_polygons: bool,
     show_confidence: bool,
     allowed_class_ids: Optional[List[int]],
+    device: Any = 0,
+    split_components: bool = False,
 ):
-    model = YOLO(model_id)
-    results = model.predict(source=image, imgsz=image_size, conf=conf_threshold)
+    # 確保 device 是整數（Gradio 可能傳入字串 "0" 或 "1"）
+    try:
+        dev = int(str(device))
+    except Exception:
+        dev = 0
+    print(f"[Device Info] Target inference device: cuda:{dev}")
+    model = YOLO(model_id).to(dev)
+    results = model.predict(source=image, imgsz=image_size, conf=conf_threshold, device=dev)
+    
+    # ★ 將結果移回 CPU
+    results = [r.cpu() for r in results]
+    
+    # ★ 釋放型號顯存
+    model.cpu()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
     annotated_bgr = annotate_from_results(
         results[0],
         label_mode,
@@ -212,6 +249,7 @@ def infer_image_single(
         show_polygons,
         show_confidence,
         allowed_class_ids,
+        split_components,
     )
     # Gradio Image 用 RGB
     return annotated_bgr[:, :, ::-1], results  # (RGB, results)
@@ -228,8 +266,17 @@ def infer_video_single(
     show_polygons: bool,
     show_confidence: bool,
     allowed_class_ids: Optional[List[int]],
+    device: Any = 0,
+    split_components: bool = False,
 ):
-    model = YOLO(model_id)
+    # 確保 device 是整數
+    try:
+        dev = int(str(device))
+    except Exception:
+        dev = 0
+    print(f"[Device Info] Target video inference device: cuda:{dev}")
+
+    model = YOLO(model_id).to(dev)
 
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -248,20 +295,29 @@ def infer_video_single(
         ret, frame = cap.read()
         if not ret:
             break
-        results = model.predict(source=frame, imgsz=image_size, conf=conf_threshold)
+        results = model.predict(source=frame, imgsz=image_size, conf=conf_threshold, device=dev)
+        # 影片逐幀也建議移回 CPU
+        res_cpu = results[0].cpu()
         annotated_bgr = annotate_from_results(
-            results[0],
+            res_cpu,
             label_mode,
             show_boxes,
             show_masks,
             show_polygons,
             show_confidence,
             allowed_class_ids,
+            split_components,
         )
         out.write(annotated_bgr)
 
     cap.release()
     out.release()
+    
+    # ★ 釋放型號顯存
+    model.cpu()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        
     return out_path
 
 
@@ -276,6 +332,8 @@ def yolov12_multi_inference_image(
     show_polygons: bool,
     show_confidence: bool,
     allowed_class_ids: Optional[List[int]],
+    device: int = 0,
+    split_components: bool = False,
 ):
     """
     同一張 image，對多個模型推論。
@@ -298,6 +356,8 @@ def yolov12_multi_inference_image(
             show_polygons,
             show_confidence,
             allowed_class_ids,
+            device,
+            split_components,
         )
         gallery_items.append((img_rgb, mid))
         results_cache[mid] = results
@@ -316,6 +376,8 @@ def yolov12_multi_inference_video(
     show_polygons: bool,
     show_confidence: bool,
     allowed_class_ids: Optional[List[int]],
+    device: int = 0,
+    split_components: bool = False,
 ):
     """
     同一支影片對多個模型推論。
@@ -340,6 +402,8 @@ def yolov12_multi_inference_video(
             show_polygons,
             show_confidence,
             allowed_class_ids,
+            device,
+            split_components,
         )
         outs.append((mid, out_path))
 
@@ -377,6 +441,8 @@ def yolov12_inference_for_examples(
         show_masks,
         True,   # show_polygons
         True,   # show_confidence
-        allowed_class_ids=None,
+        None,   # allowed_class_ids
+        0,      # device
+        False,  # split_components
     )
     return gallery

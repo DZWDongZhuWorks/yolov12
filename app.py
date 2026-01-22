@@ -44,6 +44,12 @@ def app():
                     allow_custom_value=True,
                     multiselect=True,
                 )
+                device_in = gr.Radio(
+                    choices=["0", "1"],
+                    value="0",
+                    label="Device",
+                    interactive=True,
+                )
 
                 image_size = gr.Slider(
                     label="Image Size",
@@ -69,6 +75,7 @@ def app():
                 show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
                 show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")  # ★ 新增
                 show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
+                split_components = gr.Checkbox(value=False, label="分離連通域")  # ★ 新增
 
                 yolov12_infer = gr.Button(value="Detect Objects (Run)")
 
@@ -150,6 +157,8 @@ def app():
             saved_models_in,
             class_selected_items_in,
             class_choices_in,
+            device_in,
+            split_components_in,
         ):
             # 1) 正規化模型清單（最多 MAX_MODELS 個）
             if isinstance(model_ids_in, str):
@@ -210,6 +219,8 @@ def app():
                     show_polygons_in, 
                     show_conf_in,
                     allowed_class_ids=allowed_ids,
+                    device=device_in,
+                    split_components=split_components_in,
                 )
 
                 # 4-2) 從第一個結果建立類別選單
@@ -315,6 +326,8 @@ def app():
                     show_polygons_in, 
                     show_conf_in,
                     allowed_class_ids=allowed_ids,
+                    device=device_in,
+                    split_components=split_components_in,
                 )
 
                 video_updates = [gr.update(value=None)] * 5
@@ -353,6 +366,8 @@ def app():
                 saved_models_state,
                 class_selector,
                 class_choices_state,
+                device_in,
+                split_components,
             ],
             outputs=[
                 output_gallery,
@@ -380,6 +395,7 @@ def app():
             show_conf_in,
             input_type_in,
             class_selected_items_in,
+            split_components_in,
         ):
             if input_type_in != "Image" or not last_results_dict:
                 return gr.update()
@@ -403,13 +419,14 @@ def app():
                     show_polygons_in,
                     show_conf_in,
                     allowed_ids,
+                    split_components_in,
                 )
                 gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
 
             return gallery
 
-        # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪
-        for ctrl in (label_mode, show_boxes, show_masks, show_polygons, show_confidence):
+        # 標籤模式/框/遮罩/polygon/信心值/連通域 改變時即時重繪
+        for ctrl in (label_mode, show_boxes, show_masks, show_polygons, show_confidence, split_components):
             ctrl.change(
                 fn=replot_all_filtered,
                 inputs=[
@@ -421,6 +438,7 @@ def app():
                     show_confidence,
                     input_type,
                     class_selector,
+                    split_components,
                 ],
                 outputs=[output_gallery],
             )
@@ -437,6 +455,7 @@ def app():
                 show_confidence,
                 input_type,
                 class_selector,
+                split_components,
             ],
             outputs=[output_gallery],
         )
@@ -453,6 +472,7 @@ def app():
             show_polygons_in,
             show_conf_in,
             input_type_in,
+            split_components_in,
         ):
             # 將值設為目前 choices（全選）
             update_component = gr.update(value=class_choices_in or [])
@@ -466,6 +486,7 @@ def app():
                 show_conf_in,
                 input_type_in,
                 class_choices_in or [],
+                split_components_in,
             )
             return update_component, gallery
 
@@ -480,6 +501,7 @@ def app():
                 show_polygons,
                 show_confidence,
                 input_type,
+                split_components,
             ],
             outputs=[class_selector, output_gallery],
         )
@@ -493,6 +515,7 @@ def app():
             show_polygons_in,
             show_conf_in,
             input_type_in,
+            split_components_in,
         ):
             update_component = gr.update(value=[])
             gallery = replot_all_filtered(
@@ -504,6 +527,7 @@ def app():
                 show_conf_in,
                 input_type_in,
                 [],
+                split_components_in,
             )
             return update_component, gallery
 
@@ -517,6 +541,7 @@ def app():
                 show_polygons,
                 show_confidence,
                 input_type,
+                split_components,
             ],
             outputs=[class_selector, output_gallery],
         )

@@ -35,6 +35,7 @@ def build_objects_from_result(
     allowed_class_ids: Optional[List[int]] = None,
     simplify_mode: str = "none",      # "none" / "convex_hull" / "rdp"
     simplify_eps_ratio: float = 0.01, # 只對 "rdp" 有效
+    split_components: bool = False,   # ★ 新增：是否拆分連通域
 ) -> List[Dict[str, Any]]:
     """
     從單一個 YOLO result 產生標準化的物件資訊（含 polygon）。
@@ -64,49 +65,66 @@ def build_objects_from_result(
         if allowed_class_ids is not None and cid not in set(allowed_class_ids):
             continue
 
-        x1, y1, x2, y2 = [float(v) for v in box.tolist()]
+        orig_x1, orig_y1, orig_x2, orig_y2 = [float(v) for v in box.tolist()]
         class_name = names.get(cid, str(cid))
         conf = float(conf_arr[i]) if conf_arr is not None and i < len(conf_arr) else None
 
         # --- 產生 polygons ---
-        polys: List[List[List[float]]] = []
-
         if has_masks and raw_polys is not None and i < len(raw_polys):
             item = raw_polys[i]
-
-            # YOLO 可能是 ndarray 或 list[ndarray]
+            # YOLO 提供的 xy 可能是 ndarray (一整圈) 或 list[ndarray] (斷開的多圈)
             segments = item if isinstance(item, list) else [item]
 
-            for seg in segments:
-                if seg is None:
-                    continue
-                arr = np.asarray(seg, dtype=np.float32)
-                if arr.ndim == 1:
-                    arr = arr.reshape(-1, 2)
-                if arr.shape[0] < 3:
-                    continue
+            if split_components:
+                # 【模式 A】拆分模式：每個 segment 都是一個獨立物件
+                for seg in segments:
+                    if seg is None: continue
+                    arr = np.asarray(seg, dtype=np.float32)
+                    if arr.ndim == 1: arr = arr.reshape(-1, 2)
+                    if arr.shape[0] < 3: continue
 
-                arr = _simplify_segment(arr, simplify_mode, simplify_eps_ratio)
-                polys.append(arr.astype(float).tolist())
+                    # 重新計算該分量的 BBox
+                    new_x1, new_y1 = arr.min(axis=0)
+                    new_x2, new_y2 = arr.max(axis=0)
+                    
+                    # 簡化多邊形
+                    arr_simplified = _simplify_segment(arr, simplify_mode, simplify_eps_ratio)
+                    
+                    objects.append({
+                        "class_id": int(cid),
+                        "class_name": class_name,
+                        "confidence": conf,
+                        "bbox_xyxy": [float(new_x1), float(new_y1), float(new_x2), float(new_y2)],
+                        "polygons": [arr_simplified.astype(float).tolist()],
+                    })
+            else:
+                # 【模式 B】不拆分模式：維持原樣，一個物件可包含多個 polygons
+                polys = []
+                for seg in segments:
+                    if seg is None: continue
+                    arr = np.asarray(seg, dtype=np.float32)
+                    if arr.ndim == 1: arr = arr.reshape(-1, 2)
+                    if arr.shape[0] < 3: continue
+                    
+                    arr_simplified = _simplify_segment(arr, simplify_mode, simplify_eps_ratio)
+                    polys.append(arr_simplified.astype(float).tolist())
+                
+                if polys:
+                    objects.append({
+                        "class_id": int(cid),
+                        "class_name": class_name,
+                        "confidence": conf,
+                        "bbox_xyxy": [orig_x1, orig_y1, orig_x2, orig_y2],
+                        "polygons": polys,
+                    })
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon
-            polys.append(
-                [
-                    [x1, y1],
-                    [x2, y1],
-                    [x2, y2],
-                    [x1, y2],
-                ]
-            )
-
-        objects.append(
-            {
+            objects.append({
                 "class_id": int(cid),
                 "class_name": class_name,
                 "confidence": conf,
-                "bbox_xyxy": [x1, y1, x2, y2],
-                "polygons": polys,
-            }
-        )
+                "bbox_xyxy": [orig_x1, orig_y1, orig_x2, orig_y2],
+                "polygons": [[ [orig_x1, orig_y1], [orig_x2, orig_y1], [orig_x2, orig_y2], [orig_x1, orig_y2] ]],
+            })
 
     return objects
