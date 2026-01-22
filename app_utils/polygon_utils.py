@@ -30,6 +30,19 @@ def _simplify_segment(seg: np.ndarray, mode: str, eps_ratio: float) -> np.ndarra
     return approx.reshape(-1, 2)
 
 
+def _close_ring(points: List[List[float]]) -> List[List[float]]:
+    """
+    確保 polygon ring 首尾相同（GeoJSON 需要閉合 ring）。
+    """
+    if len(points) < 3:
+        return points
+    first = points[0]
+    last = points[-1]
+    if len(first) >= 2 and len(last) >= 2 and first[0] == last[0] and first[1] == last[1]:
+        return points
+    return points + [first]
+
+
 def build_objects_from_result(
     result,
     allowed_class_ids: Optional[List[int]] = None,
@@ -87,16 +100,18 @@ def build_objects_from_result(
                     continue
 
                 arr = _simplify_segment(arr, simplify_mode, simplify_eps_ratio)
-                polys.append(arr.astype(float).tolist())
+                polys.append(_close_ring(arr.astype(float).tolist()))
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon
             polys.append(
-                [
-                    [x1, y1],
-                    [x2, y1],
-                    [x2, y2],
-                    [x1, y2],
-                ]
+                _close_ring(
+                    [
+                        [x1, y1],
+                        [x2, y1],
+                        [x2, y2],
+                        [x1, y2],
+                    ]
+                )
             )
 
         objects.append(
