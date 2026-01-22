@@ -23,15 +23,8 @@ def _sanitize_filename(name: str) -> str:
     keep = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in name.strip())
     return keep or "model"
 
-def build_payload(
-    result,
-    simplify_mode,
-    simplify_eps_ratio,
-    model_name: str,
-    image_info: Dict[str, Any],
-    allowed_class_ids: Optional[List[int]] = None,
-    split_components: bool = False,
-) -> Dict[str, Any]:
+def build_payload(result, simplify_mode, simplify_eps_ratio, model_name: str, image_info: Dict[str, Any],
+                  allowed_class_ids: Optional[List[int]] = None, split_components: bool = False) -> Dict[str, Any]:
     """
     將單一模型的一張影像推論結果整理成 JSON 結構
     """
@@ -48,13 +41,7 @@ def build_payload(
         "model": {
             "name": model_name
         },
-        "objects": _extract_objects(
-            result,
-            simplify_mode,
-            simplify_eps_ratio,
-            allowed_class_ids=allowed_class_ids,
-            split_components=split_components,
-        )
+        "objects": _extract_objects(result, simplify_mode, simplify_eps_ratio, allowed_class_ids=allowed_class_ids, split_components=split_components)
     }
 
 def export_results_cache(
@@ -79,15 +66,8 @@ def export_results_cache(
     filepaths = []
     for model_name, results in results_cache.items():
         model_stem = _sanitize_filename(os.path.splitext(os.path.basename(model_name))[0])
-        payload = build_payload(
-            results[0],
-            simplify_mode,
-            simplify_eps_ratio,
-            model_name=model_name,
-            image_info=image_info,
-            allowed_class_ids=allowed_class_ids,
-            split_components=split_components,
-        )
+        payload = build_payload(results[0], simplify_mode, simplify_eps_ratio, model_name=model_name, image_info=image_info,
+                                allowed_class_ids=allowed_class_ids, split_components=split_components)
         out_path = os.path.join(out_dir, f"{base}__{model_stem}.json")
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
