@@ -6,7 +6,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
+from ultralytics.utils import ops
 from ultralytics.utils.plotting import colors as ucolors
 from .polygon_utils import build_objects_from_result
 
@@ -185,6 +187,99 @@ def annotate_from_results(
         )
 
     return base
+
+
+def split_connection_contours(result):
+    """
+    將單一 result 的 masks 拆成連通元件，並以拆分後的 contour 取代原本結果。
+    若 mask 沒有多段，則維持原樣。
+    """
+    if not hasattr(result, "masks") or result.masks is None:
+        return result
+    if not hasattr(result, "boxes") or result.boxes is None:
+        return result
+
+    masks = result.masks.data
+    if masks is None or len(masks) == 0:
+        return result
+
+    boxes_data = result.boxes.data
+    if boxes_data is None or len(boxes_data) == 0:
+        return result
+
+    orig_shape = result.orig_shape
+    mask_shape = masks.shape[1:]
+    new_masks: List[np.ndarray] = []
+    new_boxes: List[List[float]] = []
+    had_split = False
+
+    boxes_np = boxes_data.detach().cpu().numpy()
+    is_track = result.boxes.is_track
+
+    for i, mask_tensor in enumerate(masks):
+        mask_np = mask_tensor.detach().cpu().numpy()
+        binary = (mask_np > 0.5).astype(np.uint8)
+        contours = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+
+        if len(contours) <= 1:
+            new_masks.append(mask_np)
+            new_boxes.append(boxes_np[i].tolist())
+            continue
+
+        had_split = True
+        for contour in contours:
+            if contour.shape[0] < 3:
+                continue
+            component = np.zeros_like(binary)
+            cv2.drawContours(component, [contour], -1, 1, thickness=-1)
+            new_masks.append(component.astype(mask_np.dtype))
+
+            coords = contour.reshape(-1, 2).astype(np.float32)
+            coords = ops.scale_coords(mask_shape, coords, orig_shape, normalize=False)
+            x_min, y_min = coords.min(axis=0)
+            x_max, y_max = coords.max(axis=0)
+
+            if is_track:
+                track_id = float(boxes_np[i][4])
+                conf = float(boxes_np[i][5])
+                cls = float(boxes_np[i][6])
+                new_boxes.append([x_min, y_min, x_max, y_max, track_id, conf, cls])
+            else:
+                conf = float(boxes_np[i][4])
+                cls = float(boxes_np[i][5])
+                new_boxes.append([x_min, y_min, x_max, y_max, conf, cls])
+
+    if not new_boxes:
+        return result
+
+    if not had_split:
+        return result
+
+    new_boxes_tensor = torch.tensor(new_boxes, device=boxes_data.device, dtype=boxes_data.dtype)
+    new_masks_tensor = torch.tensor(np.stack(new_masks, axis=0), device=masks.device, dtype=masks.dtype)
+
+    updated = result.new()
+    updated.update(boxes=new_boxes_tensor, masks=new_masks_tensor)
+    updated.names = result.names
+    updated.path = result.path
+    return updated
+
+
+def apply_connection_contour_split(results_cache: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    對 results_cache 內的結果做連通元件拆分，維持結果型態供後續流程使用。
+    """
+    if not results_cache:
+        return results_cache
+
+    updated_cache: Dict[str, Any] = {}
+    for mid, results in results_cache.items():
+        if not results:
+            updated_cache[mid] = results
+            continue
+        updated_cache[mid] = [split_connection_contours(res) for res in results]
+
+    return updated_cache
 
 
 # -----------------------------

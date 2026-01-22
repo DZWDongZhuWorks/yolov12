@@ -9,6 +9,7 @@ from app_utils.inference import (
     names_to_choice_list,
     parse_selected_to_ids,
     annotate_from_results,
+    apply_connection_contour_split,
     yolov12_multi_inference_image,
     yolov12_multi_inference_video,
     yolov12_inference_for_examples,
@@ -69,6 +70,7 @@ def app():
                 show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
                 show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")  # ★ 新增
                 show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
+                contour_split = gr.Checkbox(value=False, label="Connection Contour Split")
 
                 yolov12_infer = gr.Button(value="Detect Objects (Run)")
 
@@ -119,6 +121,7 @@ def app():
         # 快取最後一次「影像」結果（每個模型一份）
         # 型別: Dict[str, results]
         last_results = gr.State(value=None)
+        raw_results = gr.State(value=None)
 
         # ======== Input Type 切換：控制元件可視性 ========
         def update_visibility(input_type_val: str):
@@ -147,6 +150,7 @@ def app():
             show_masks_in,
             show_polygons_in, 
             show_conf_in,
+            contour_split_in,
             saved_models_in,
             class_selected_items_in,
             class_choices_in,
@@ -164,6 +168,7 @@ def app():
                     gr.update(),  # output_gallery
                     gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),  # v1~v5
                     None,  # last_results
+                    None,  # raw_results
                     gr.update(choices=initial_choices, value=[]),  # model_ids
                     saved_models_in,  # saved_models_state
                     gr.update(),  # class_selector
@@ -191,6 +196,7 @@ def app():
                         gr.update(),
                         gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
                         None,
+                        None,
                         gr.update(choices=new_choices, value=mids),
                         new_saved,
                         gr.update(),  # class_selector
@@ -212,9 +218,13 @@ def app():
                     allowed_class_ids=allowed_ids,
                 )
 
+                raw_results_cache = results_cache
+                if contour_split_in:
+                    results_cache = apply_connection_contour_split(results_cache)
+
                 # 4-2) 從第一個結果建立類別選單
                 try:
-                    first_result = next(iter(results_cache.values()))[0]
+                    first_result = next(iter(raw_results_cache.values()))[0]
                     names = getattr(first_result, "names", {}) or {}
                 except Exception:
                     names = {}
@@ -283,6 +293,7 @@ def app():
                     gr.update(value=None, label="Model #4"),
                     gr.update(value=None, label="Model #5"),
                     results_cache,  # last_results
+                    raw_results_cache,  # raw_results
                     gr.update(choices=new_choices, value=mids),  # model_ids
                     new_saved,  # saved_models_state
                     class_selector_update,
@@ -296,6 +307,7 @@ def app():
                     return (
                         gr.update(),
                         gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+                        None,
                         None,
                         gr.update(choices=new_choices, value=mids),
                         new_saved,
@@ -329,6 +341,7 @@ def app():
                     video_updates[3],
                     video_updates[4],
                     None,  # last_results（影片不快取）
+                    None,  # raw_results
                     gr.update(choices=new_choices, value=mids),
                     new_saved,
                     gr.update(),  # class_selector：維持原樣
@@ -350,6 +363,7 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
+                contour_split,
                 saved_models_state,
                 class_selector,
                 class_choices_state,
@@ -362,6 +376,7 @@ def app():
                 v4,
                 v5,
                 last_results,
+                raw_results,
                 model_ids,
                 saved_models_state,
                 class_selector,
@@ -439,6 +454,53 @@ def app():
                 class_selector,
             ],
             outputs=[output_gallery],
+        )
+
+        def toggle_contour_split(
+            raw_results_dict,
+            contour_split_in,
+            label_mode_in,
+            show_boxes_in,
+            show_masks_in,
+            show_polygons_in,
+            show_conf_in,
+            input_type_in,
+            class_selected_items_in,
+        ):
+            if not raw_results_dict:
+                return None, gr.update()
+
+            if contour_split_in:
+                updated_results = apply_connection_contour_split(raw_results_dict)
+            else:
+                updated_results = raw_results_dict
+
+            gallery = replot_all_filtered(
+                updated_results,
+                label_mode_in,
+                show_boxes_in,
+                show_masks_in,
+                show_polygons_in,
+                show_conf_in,
+                input_type_in,
+                class_selected_items_in,
+            )
+            return updated_results, gallery
+
+        contour_split.change(
+            fn=toggle_contour_split,
+            inputs=[
+                raw_results,
+                contour_split,
+                label_mode,
+                show_boxes,
+                show_masks,
+                show_polygons,
+                show_confidence,
+                input_type,
+                class_selector,
+            ],
+            outputs=[last_results, output_gallery],
         )
 
 
