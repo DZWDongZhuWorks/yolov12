@@ -105,6 +105,8 @@ def annotate_from_results(
     show_masks: bool,
     show_polygons: bool,
     show_confidence: bool,
+    simplify_mode: str,
+    simplify_eps_ratio: float,
     allowed_class_ids: Optional[List[int]] = None,
 ):
     """
@@ -124,8 +126,8 @@ def annotate_from_results(
     objects = build_objects_from_result(
         result,
         allowed_class_ids=allowed_class_ids,
-        simplify_mode="rdp",    # 跟 export_utils 用同一個 mode
-        simplify_eps_ratio=0.01,
+        simplify_mode=simplify_mode,
+        simplify_eps_ratio=simplify_eps_ratio,
     )
     
     # ---- 先畫 polygon 邊界（如果有 mask） ----
@@ -295,6 +297,8 @@ def infer_image_single(
     show_masks: bool,
     show_polygons: bool,
     show_confidence: bool,
+    simplify_mode: str,
+    simplify_eps_ratio: float,
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
@@ -306,6 +310,8 @@ def infer_image_single(
         show_masks,
         show_polygons,
         show_confidence,
+        simplify_mode,
+        simplify_eps_ratio,
         allowed_class_ids,
     )
     # Gradio Image 用 RGB
@@ -322,6 +328,8 @@ def infer_video_single(
     show_masks: bool,
     show_polygons: bool,
     show_confidence: bool,
+    simplify_mode: str,
+    simplify_eps_ratio: float,
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
@@ -351,6 +359,8 @@ def infer_video_single(
             show_masks,
             show_polygons,
             show_confidence,
+            simplify_mode,
+            simplify_eps_ratio,
             allowed_class_ids,
         )
         out.write(annotated_bgr)
@@ -370,6 +380,8 @@ def yolov12_multi_inference_image(
     show_masks: bool,
     show_polygons: bool,
     show_confidence: bool,
+    simplify_mode: str,
+    simplify_eps_ratio: float,
     allowed_class_ids: Optional[List[int]],
 ):
     """
@@ -392,6 +404,8 @@ def yolov12_multi_inference_image(
             show_masks,
             show_polygons,
             show_confidence,
+            simplify_mode,
+            simplify_eps_ratio,
             allowed_class_ids,
         )
         gallery_items.append((img_rgb, mid))
@@ -410,6 +424,8 @@ def yolov12_multi_inference_video(
     show_masks: bool,
     show_polygons: bool,
     show_confidence: bool,
+    simplify_mode: str,
+    simplify_eps_ratio: float,
     allowed_class_ids: Optional[List[int]],
 ):
     """
@@ -434,6 +450,8 @@ def yolov12_multi_inference_video(
             show_masks,
             show_polygons,
             show_confidence,
+            simplify_mode,
+            simplify_eps_ratio,
             allowed_class_ids,
         )
         outs.append((mid, out_path))
@@ -472,6 +490,8 @@ def yolov12_inference_for_examples(
         show_masks,
         True,   # show_polygons
         True,   # show_confidence
+        "rdp",
+        0.01,
         allowed_class_ids=None,
     )
     return gallery

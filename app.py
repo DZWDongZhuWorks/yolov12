@@ -71,6 +71,18 @@ def app():
                 show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")  # ★ 新增
                 show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
                 contour_split = gr.Checkbox(value=False, label="Connection Contour Split")
+                polygon_simplify = gr.Radio(
+                    choices=["none", "convex_hull", "rdp"],
+                    value="rdp",
+                    label="Polygon Simplify Mode",
+                )
+                simplify_eps_ratio = gr.Slider(
+                    label="Polygon Simplify Epsilon Ratio",
+                    minimum=0.0,
+                    maximum=0.1,
+                    step=0.001,
+                    value=0.01,
+                )
 
                 yolov12_infer = gr.Button(value="Detect Objects (Run)")
 
@@ -151,6 +163,8 @@ def app():
             show_polygons_in, 
             show_conf_in,
             contour_split_in,
+            simplify_mode_in,
+            simplify_eps_ratio_in,
             saved_models_in,
             class_selected_items_in,
             class_choices_in,
@@ -215,6 +229,8 @@ def app():
                     show_masks_in,
                     show_polygons_in, 
                     show_conf_in,
+                    simplify_mode_in,
+                    simplify_eps_ratio_in,
                     allowed_class_ids=allowed_ids,
                 )
 
@@ -326,6 +342,8 @@ def app():
                     show_masks_in,
                     show_polygons_in, 
                     show_conf_in,
+                    simplify_mode_in,
+                    simplify_eps_ratio_in,
                     allowed_class_ids=allowed_ids,
                 )
 
@@ -364,6 +382,8 @@ def app():
                 show_polygons,
                 show_confidence,
                 contour_split,
+                polygon_simplify,
+                simplify_eps_ratio,
                 saved_models_state,
                 class_selector,
                 class_choices_state,
@@ -393,6 +413,8 @@ def app():
             show_masks_in,
             show_polygons_in,
             show_conf_in,
+            simplify_mode_in,
+            simplify_eps_ratio_in,
             input_type_in,
             class_selected_items_in,
         ):
@@ -417,6 +439,8 @@ def app():
                     show_masks_in,
                     show_polygons_in,
                     show_conf_in,
+                    simplify_mode_in,
+                    simplify_eps_ratio_in,
                     allowed_ids,
                 )
                 gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
@@ -424,7 +448,15 @@ def app():
             return gallery
 
         # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪
-        for ctrl in (label_mode, show_boxes, show_masks, show_polygons, show_confidence):
+        for ctrl in (
+            label_mode,
+            show_boxes,
+            show_masks,
+            show_polygons,
+            show_confidence,
+            polygon_simplify,
+            simplify_eps_ratio,
+        ):
             ctrl.change(
                 fn=replot_all_filtered,
                 inputs=[
@@ -434,6 +466,8 @@ def app():
                     show_masks,
                     show_polygons,
                     show_confidence,
+                    polygon_simplify,
+                    simplify_eps_ratio,
                     input_type,
                     class_selector,
                 ],
@@ -450,6 +484,8 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
+                polygon_simplify,
+                simplify_eps_ratio,
                 input_type,
                 class_selector,
             ],
@@ -464,6 +500,8 @@ def app():
             show_masks_in,
             show_polygons_in,
             show_conf_in,
+            simplify_mode_in,
+            simplify_eps_ratio_in,
             input_type_in,
             class_selected_items_in,
         ):
@@ -482,6 +520,8 @@ def app():
                 show_masks_in,
                 show_polygons_in,
                 show_conf_in,
+                simplify_mode_in,
+                simplify_eps_ratio_in,
                 input_type_in,
                 class_selected_items_in,
             )
@@ -497,6 +537,8 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
+                polygon_simplify,
+                simplify_eps_ratio,
                 input_type,
                 class_selector,
             ],
@@ -514,6 +556,8 @@ def app():
             show_masks_in,
             show_polygons_in,
             show_conf_in,
+            simplify_mode_in,
+            simplify_eps_ratio_in,
             input_type_in,
         ):
             # 將值設為目前 choices（全選）
@@ -526,6 +570,8 @@ def app():
                 show_masks_in,
                 show_polygons_in,
                 show_conf_in,
+                simplify_mode_in,
+                simplify_eps_ratio_in,
                 input_type_in,
                 class_choices_in or [],
             )
@@ -541,6 +587,8 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
+                polygon_simplify,
+                simplify_eps_ratio,
                 input_type,
             ],
             outputs=[class_selector, output_gallery],
@@ -554,6 +602,8 @@ def app():
             show_masks_in,
             show_polygons_in,
             show_conf_in,
+            simplify_mode_in,
+            simplify_eps_ratio_in,
             input_type_in,
         ):
             update_component = gr.update(value=[])
@@ -564,6 +614,8 @@ def app():
                 show_masks_in,
                 show_polygons_in,
                 show_conf_in,
+                simplify_mode_in,
+                simplify_eps_ratio_in,
                 input_type_in,
                 [],
             )
@@ -578,6 +630,8 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
+                polygon_simplify,
+                simplify_eps_ratio,
                 input_type,
             ],
             outputs=[class_selector, output_gallery],
@@ -587,7 +641,13 @@ def app():
 
 
         # ======== 匯出 JSON ========
-        def export_json_click(last_results_dict, class_selected_items_in, image_meta):
+        def export_json_click(
+            last_results_dict,
+            class_selected_items_in,
+            image_meta,
+            simplify_mode_in,
+            simplify_eps_ratio_in,
+        ):
             # 僅支援影像模式（因影片逐幀 polygon 通常會很大）
             if not last_results_dict or not image_meta:
                 return []
@@ -605,12 +665,20 @@ def app():
                 image_info=image_meta,
                 out_dir=None,
                 allowed_class_ids=allowed_ids,
+                simplify_mode=simplify_mode_in,
+                simplify_eps_ratio=simplify_eps_ratio_in,
             )
             return files
 
         export_btn.click(
             fn=export_json_click,
-            inputs=[last_results, class_selector, image_meta_state],
+            inputs=[
+                last_results,
+                class_selector,
+                image_meta_state,
+                polygon_simplify,
+                simplify_eps_ratio,
+            ],
             outputs=[export_files],
         )
 
