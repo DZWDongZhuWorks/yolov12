@@ -179,13 +179,18 @@ def annotate_from_results(
         y_top = max(0, y1 - th - 2 * pad)
 
         cv2.rectangle(base, (x1, y_top), (x1 + tw + 2 * pad, y1), c_bgr, -1)
+
+        # --- 根據背景亮度自動選字色 ---
+        b, g, r = c_bgr
+        luminance = 0.299*r + 0.587*g + 0.114*b
+        text_color = (0, 0, 0) if luminance > 160 else (255, 255, 255)
         cv2.putText(
             base,
             base_text,
             (x1 + pad, y1 - pad),
             font,
             font_scale,
-            (255, 255, 255),
+            text_color,
             thickness,
             cv2.LINE_AA,
         )
