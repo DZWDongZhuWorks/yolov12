@@ -550,7 +550,7 @@ def app():
 
 
         # ======== 匯出 JSON ========
-        def export_json_click(last_results_dict, class_selected_items_in, image_meta):
+        def export_json_click(last_results_dict, class_selected_items_in, image_meta, split_components_in):
             # 僅支援影像模式（因影片逐幀 polygon 通常會很大）
             if not last_results_dict or not image_meta:
                 return []
@@ -568,12 +568,13 @@ def app():
                 image_info=image_meta,
                 out_dir=None,
                 allowed_class_ids=allowed_ids,
+                split_components=split_components_in,
             )
             return files
 
         export_btn.click(
             fn=export_json_click,
-            inputs=[last_results, class_selector, image_meta_state],
+            inputs=[last_results, class_selector, image_meta_state, split_components],
             outputs=[export_files],
         )
 

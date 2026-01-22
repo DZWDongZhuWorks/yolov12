@@ -8,12 +8,14 @@ def _extract_objects(
     simplify_mode,
     simplify_eps_ratio,
     allowed_class_ids: Optional[List[int]] = None,
+    split_components: bool = False,
 ):
     objs = build_objects_from_result(
         result,
         allowed_class_ids=allowed_class_ids,
         simplify_mode=simplify_mode,
         simplify_eps_ratio=simplify_eps_ratio,
+        split_components=split_components,
     )
     return objs
 
@@ -22,7 +24,7 @@ def _sanitize_filename(name: str) -> str:
     return keep or "model"
 
 def build_payload(result, simplify_mode, simplify_eps_ratio, model_name: str, image_info: Dict[str, Any],
-                  allowed_class_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+                  allowed_class_ids: Optional[List[int]] = None, split_components: bool = False) -> Dict[str, Any]:
     """
     將單一模型的一張影像推論結果整理成 JSON 結構
     """
@@ -39,7 +41,7 @@ def build_payload(result, simplify_mode, simplify_eps_ratio, model_name: str, im
         "model": {
             "name": model_name
         },
-        "objects": _extract_objects(result, simplify_mode, simplify_eps_ratio, allowed_class_ids=allowed_class_ids)
+        "objects": _extract_objects(result, simplify_mode, simplify_eps_ratio, allowed_class_ids=allowed_class_ids, split_components=split_components)
     }
 
 def export_results_cache(
@@ -49,6 +51,7 @@ def export_results_cache(
     allowed_class_ids=None,
     simplify_mode: str = "convex_hull",
     simplify_eps_ratio: float = 0.01,
+    split_components: bool = False,
 ):
     """
     逐模型輸出成多個 JSON 檔。檔名格式：{image_base}__{model_name}.json
@@ -64,7 +67,7 @@ def export_results_cache(
     for model_name, results in results_cache.items():
         model_stem = _sanitize_filename(os.path.splitext(os.path.basename(model_name))[0])
         payload = build_payload(results[0], simplify_mode, simplify_eps_ratio, model_name=model_name, image_info=image_info,
-                                allowed_class_ids=allowed_class_ids)
+                                allowed_class_ids=allowed_class_ids, split_components=split_components)
         out_path = os.path.join(out_dir, f"{base}__{model_stem}.json")
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
