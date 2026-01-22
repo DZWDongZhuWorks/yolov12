@@ -9,6 +9,7 @@ from app_utils.inference import (
     names_to_choice_list,
     parse_selected_to_ids,
     annotate_from_results,
+    split_connection_contours_cache,
     yolov12_multi_inference_image,
     yolov12_multi_inference_video,
     yolov12_inference_for_examples,
@@ -69,6 +70,10 @@ def app():
                 show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
                 show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")  # ★ 新增
                 show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
+                connection_contour_split = gr.Checkbox(
+                    value=False,
+                    label="connection contour split",
+                )
 
                 yolov12_infer = gr.Button(value="Detect Objects (Run)")
 
@@ -118,7 +123,8 @@ def app():
 
         # 快取最後一次「影像」結果（每個模型一份）
         # 型別: Dict[str, results]
-        last_results = gr.State(value=None)
+        last_results_raw = gr.State(value=None)
+        last_results_split = gr.State(value=None)
 
         # ======== Input Type 切換：控制元件可視性 ========
         def update_visibility(input_type_val: str):
@@ -147,6 +153,7 @@ def app():
             show_masks_in,
             show_polygons_in, 
             show_conf_in,
+            connection_contour_split_in,
             saved_models_in,
             class_selected_items_in,
             class_choices_in,
@@ -163,7 +170,8 @@ def app():
                 return (
                     gr.update(),  # output_gallery
                     gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),  # v1~v5
-                    None,  # last_results
+                    None,  # last_results_raw
+                    None,  # last_results_split
                     gr.update(choices=initial_choices, value=[]),  # model_ids
                     saved_models_in,  # saved_models_state
                     gr.update(),  # class_selector
@@ -191,6 +199,7 @@ def app():
                         gr.update(),
                         gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
                         None,
+                        None,
                         gr.update(choices=new_choices, value=mids),
                         new_saved,
                         gr.update(),  # class_selector
@@ -210,7 +219,20 @@ def app():
                     show_polygons_in, 
                     show_conf_in,
                     allowed_class_ids=allowed_ids,
+                    connection_contour_split=False,
                 )
+
+                results_cache_split = split_connection_contours_cache(results_cache)
+                if connection_contour_split_in:
+                    gallery = build_gallery_from_results(
+                        results_cache_split,
+                        label_mode_in,
+                        show_boxes_in,
+                        show_masks_in,
+                        show_polygons_in,
+                        show_conf_in,
+                        allowed_ids,
+                    )
 
                 # 4-2) 從第一個結果建立類別選單
                 try:
@@ -282,7 +304,8 @@ def app():
                     gr.update(value=None, label="Model #3"),
                     gr.update(value=None, label="Model #4"),
                     gr.update(value=None, label="Model #5"),
-                    results_cache,  # last_results
+                    results_cache,  # last_results_raw
+                    results_cache_split,  # last_results_split
                     gr.update(choices=new_choices, value=mids),  # model_ids
                     new_saved,  # saved_models_state
                     class_selector_update,
@@ -296,6 +319,7 @@ def app():
                     return (
                         gr.update(),
                         gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+                        None,
                         None,
                         gr.update(choices=new_choices, value=mids),
                         new_saved,
@@ -315,6 +339,7 @@ def app():
                     show_polygons_in, 
                     show_conf_in,
                     allowed_class_ids=allowed_ids,
+                    connection_contour_split=connection_contour_split_in,
                 )
 
                 video_updates = [gr.update(value=None)] * 5
@@ -328,7 +353,8 @@ def app():
                     video_updates[2],
                     video_updates[3],
                     video_updates[4],
-                    None,  # last_results（影片不快取）
+                    None,  # last_results_raw
+                    None,  # last_results_split
                     gr.update(choices=new_choices, value=mids),
                     new_saved,
                     gr.update(),  # class_selector：維持原樣
@@ -350,6 +376,7 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
+                connection_contour_split,
                 saved_models_state,
                 class_selector,
                 class_choices_state,
@@ -361,7 +388,8 @@ def app():
                 v3,
                 v4,
                 v5,
-                last_results,
+                last_results_raw,
+                last_results_split,
                 model_ids,
                 saved_models_state,
                 class_selector,
@@ -371,8 +399,32 @@ def app():
         )
 
         # ======== 即時重繪（只針對 Image 模式） ========
+        def build_gallery_from_results(
+            results_cache,
+            label_mode_in,
+            show_boxes_in,
+            show_masks_in,
+            show_polygons_in,
+            show_conf_in,
+            allowed_ids,
+        ):
+            gallery_items = []
+            for mid, results in (results_cache or {}).items():
+                annotated_bgr = annotate_from_results(
+                    results[0],
+                    label_mode_in,
+                    show_boxes_in,
+                    show_masks_in,
+                    show_polygons_in,
+                    show_conf_in,
+                    allowed_ids,
+                )
+                gallery_items.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
+            return gallery_items
+
         def replot_all_filtered(
-            last_results_dict,
+            last_results_raw_dict,
+            last_results_split_dict,
             label_mode_in,
             show_boxes_in,
             show_masks_in,
@@ -380,8 +432,14 @@ def app():
             show_conf_in,
             input_type_in,
             class_selected_items_in,
+            connection_contour_split_in,
         ):
-            if input_type_in != "Image" or not last_results_dict:
+            active_results = (
+                last_results_split_dict
+                if connection_contour_split_in
+                else last_results_raw_dict
+            )
+            if input_type_in != "Image" or not active_results:
                 return gr.update()
 
             # 解析類別
@@ -393,27 +451,30 @@ def app():
             else:
                 allowed_ids = selected_ids
 
-            gallery = []
-            for mid, results in last_results_dict.items():
-                annotated_bgr = annotate_from_results(
-                    results[0],
-                    label_mode_in,
-                    show_boxes_in,
-                    show_masks_in,
-                    show_polygons_in,
-                    show_conf_in,
-                    allowed_ids,
-                )
-                gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
-
-            return gallery
+            return build_gallery_from_results(
+                active_results,
+                label_mode_in,
+                show_boxes_in,
+                show_masks_in,
+                show_polygons_in,
+                show_conf_in,
+                allowed_ids,
+            )
 
         # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪
-        for ctrl in (label_mode, show_boxes, show_masks, show_polygons, show_confidence):
+        for ctrl in (
+            label_mode,
+            show_boxes,
+            show_masks,
+            show_polygons,
+            show_confidence,
+            connection_contour_split,
+        ):
             ctrl.change(
                 fn=replot_all_filtered,
                 inputs=[
-                    last_results,
+                    last_results_raw,
+                    last_results_split,
                     label_mode,
                     show_boxes,
                     show_masks,
@@ -421,6 +482,7 @@ def app():
                     show_confidence,
                     input_type,
                     class_selector,
+                    connection_contour_split,
                 ],
                 outputs=[output_gallery],
             )
@@ -429,7 +491,8 @@ def app():
         class_selector.change(
             fn=replot_all_filtered,
             inputs=[
-                last_results,
+                last_results_raw,
+                last_results_split,
                 label_mode,
                 show_boxes,
                 show_masks,
@@ -437,6 +500,7 @@ def app():
                 show_confidence,
                 input_type,
                 class_selector,
+                connection_contour_split,
             ],
             outputs=[output_gallery],
         )
@@ -446,19 +510,22 @@ def app():
         # 「選擇全選」按鈕：同步更新 Checkbox 與即時重繪
         def select_all_and_replot(
             class_choices_in,
-            last_results_dict,
+            last_results_raw_dict,
+            last_results_split_dict,
             label_mode_in,
             show_boxes_in,
             show_masks_in,
             show_polygons_in,
             show_conf_in,
             input_type_in,
+            connection_contour_split_in,
         ):
             # 將值設為目前 choices（全選）
             update_component = gr.update(value=class_choices_in or [])
             # 重繪
             gallery = replot_all_filtered(
-                last_results_dict,
+                last_results_raw_dict,
+                last_results_split_dict,
                 label_mode_in,
                 show_boxes_in,
                 show_masks_in,
@@ -466,6 +533,7 @@ def app():
                 show_conf_in,
                 input_type_in,
                 class_choices_in or [],
+                connection_contour_split_in,
             )
             return update_component, gallery
 
@@ -473,30 +541,35 @@ def app():
             fn=select_all_and_replot,
             inputs=[
                 class_choices_state,
-                last_results,
+                last_results_raw,
+                last_results_split,
                 label_mode,
                 show_boxes,
                 show_masks,
                 show_polygons,
                 show_confidence,
                 input_type,
+                connection_contour_split,
             ],
             outputs=[class_selector, output_gallery],
         )
 
         # 「取消全選」按鈕：清空並即時重繪（不顯示任何類別）
         def clear_all_and_replot(
-            last_results_dict,
+            last_results_raw_dict,
+            last_results_split_dict,
             label_mode_in,
             show_boxes_in,
             show_masks_in,
             show_polygons_in,
             show_conf_in,
             input_type_in,
+            connection_contour_split_in,
         ):
             update_component = gr.update(value=[])
             gallery = replot_all_filtered(
-                last_results_dict,
+                last_results_raw_dict,
+                last_results_split_dict,
                 label_mode_in,
                 show_boxes_in,
                 show_masks_in,
@@ -504,19 +577,22 @@ def app():
                 show_conf_in,
                 input_type_in,
                 [],
+                connection_contour_split_in,
             )
             return update_component, gallery
 
         clear_all_btn.click(
             fn=clear_all_and_replot,
             inputs=[
-                last_results,
+                last_results_raw,
+                last_results_split,
                 label_mode,
                 show_boxes,
                 show_masks,
                 show_polygons,
                 show_confidence,
                 input_type,
+                connection_contour_split,
             ],
             outputs=[class_selector, output_gallery],
         )
@@ -525,9 +601,20 @@ def app():
 
 
         # ======== 匯出 JSON ========
-        def export_json_click(last_results_dict, class_selected_items_in, image_meta):
+        def export_json_click(
+            last_results_raw_dict,
+            last_results_split_dict,
+            class_selected_items_in,
+            image_meta,
+            connection_contour_split_in,
+        ):
             # 僅支援影像模式（因影片逐幀 polygon 通常會很大）
-            if not last_results_dict or not image_meta:
+            active_results = (
+                last_results_split_dict
+                if connection_contour_split_in
+                else last_results_raw_dict
+            )
+            if not active_results or not image_meta:
                 return []
 
             selected_ids = parse_selected_to_ids(class_selected_items_in)
@@ -539,7 +626,7 @@ def app():
                 allowed_ids = selected_ids
 
             files = export_results_cache(
-                last_results_dict,
+                active_results,
                 image_info=image_meta,
                 out_dir=None,
                 allowed_class_ids=allowed_ids,
@@ -548,7 +635,13 @@ def app():
 
         export_btn.click(
             fn=export_json_click,
-            inputs=[last_results, class_selector, image_meta_state],
+            inputs=[
+                last_results_raw,
+                last_results_split,
+                class_selector,
+                image_meta_state,
+                connection_contour_split,
+            ],
             outputs=[export_files],
         )
 

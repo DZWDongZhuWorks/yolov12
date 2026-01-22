@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 from ultralytics.utils.plotting import colors as ucolors
 from .polygon_utils import build_objects_from_result
@@ -187,6 +188,87 @@ def annotate_from_results(
     return base
 
 
+def split_connection_contours(result):
+    """
+    將單一 result 的 mask 進行連通元件分割，並回傳新的 Results。
+    若 mask 本來就是單一連通區塊，則保留原樣。
+    """
+    if (
+        not hasattr(result, "masks")
+        or result.masks is None
+        or not hasattr(result, "boxes")
+        or result.boxes is None
+        or len(result.boxes) == 0
+    ):
+        return result
+
+    mask_data = getattr(result.masks, "data", None)
+    boxes_data = getattr(result.boxes, "data", None)
+    if mask_data is None or boxes_data is None or len(mask_data) == 0:
+        return result
+
+    masks_np = mask_data.detach().cpu().numpy()
+    boxes_np = boxes_data.detach().cpu().numpy()
+
+    new_masks: List[np.ndarray] = []
+    new_boxes: List[np.ndarray] = []
+
+    for i, mask_np in enumerate(masks_np):
+        binary = mask_np > 0.5
+        if binary.sum() == 0:
+            continue
+
+        num_labels, labels = cv2.connectedComponents(binary.astype(np.uint8))
+        # num_labels: 1 (全背景) / 2 (背景+1物件) / n>2 (多物件)
+        if num_labels <= 2:
+            new_masks.append(binary)
+            new_boxes.append(boxes_np[i])
+            continue
+
+        for label_id in range(1, num_labels):
+            component = labels == label_id
+            if component.sum() == 0:
+                continue
+            ys, xs = np.where(component)
+            x1, x2 = xs.min(), xs.max()
+            y1, y2 = ys.min(), ys.max()
+
+            base_box = boxes_np[i]
+            conf = base_box[4] if base_box.shape[0] > 4 else 0.0
+            cls = base_box[5] if base_box.shape[0] > 5 else 0.0
+            new_boxes.append(np.array([x1, y1, x2, y2, conf, cls], dtype=np.float32))
+            new_masks.append(component)
+
+    if not new_boxes:
+        return result
+
+    new_masks_np = np.stack(new_masks).astype(np.float32)
+    new_boxes_np = np.stack(new_boxes).astype(np.float32)
+
+    new_masks_t = torch.from_numpy(new_masks_np).to(mask_data.device).to(mask_data.dtype)
+    new_boxes_t = torch.from_numpy(new_boxes_np).to(boxes_data.device).to(boxes_data.dtype)
+
+    new_result = result.new()
+    new_result.update(boxes=new_boxes_t, masks=new_masks_t)
+    return new_result
+
+
+def split_connection_contours_cache(results_cache: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    對 results_cache 中每個模型的 result 做連通元件切分。
+    """
+    if not results_cache:
+        return results_cache
+
+    new_cache: Dict[str, Any] = {}
+    for mid, results in results_cache.items():
+        if not results:
+            new_cache[mid] = results
+            continue
+        new_cache[mid] = [split_connection_contours(results[0])]
+    return new_cache
+
+
 # -----------------------------
 # 單模型推論（圖 / 影） + 多模型封裝
 # -----------------------------
@@ -201,9 +283,12 @@ def infer_image_single(
     show_polygons: bool,
     show_confidence: bool,
     allowed_class_ids: Optional[List[int]],
+    connection_contour_split: bool = False,
 ):
     model = YOLO(model_id)
     results = model.predict(source=image, imgsz=image_size, conf=conf_threshold)
+    if connection_contour_split:
+        results = [split_connection_contours(results[0])]
     annotated_bgr = annotate_from_results(
         results[0],
         label_mode,
@@ -228,6 +313,7 @@ def infer_video_single(
     show_polygons: bool,
     show_confidence: bool,
     allowed_class_ids: Optional[List[int]],
+    connection_contour_split: bool = False,
 ):
     model = YOLO(model_id)
 
@@ -249,6 +335,8 @@ def infer_video_single(
         if not ret:
             break
         results = model.predict(source=frame, imgsz=image_size, conf=conf_threshold)
+        if connection_contour_split:
+            results = [split_connection_contours(results[0])]
         annotated_bgr = annotate_from_results(
             results[0],
             label_mode,
@@ -276,6 +364,7 @@ def yolov12_multi_inference_image(
     show_polygons: bool,
     show_confidence: bool,
     allowed_class_ids: Optional[List[int]],
+    connection_contour_split: bool = False,
 ):
     """
     同一張 image，對多個模型推論。
@@ -298,6 +387,7 @@ def yolov12_multi_inference_image(
             show_polygons,
             show_confidence,
             allowed_class_ids,
+            connection_contour_split,
         )
         gallery_items.append((img_rgb, mid))
         results_cache[mid] = results
@@ -316,6 +406,7 @@ def yolov12_multi_inference_video(
     show_polygons: bool,
     show_confidence: bool,
     allowed_class_ids: Optional[List[int]],
+    connection_contour_split: bool = False,
 ):
     """
     同一支影片對多個模型推論。
@@ -340,6 +431,7 @@ def yolov12_multi_inference_video(
             show_polygons,
             show_confidence,
             allowed_class_ids,
+            connection_contour_split,
         )
         outs.append((mid, out_path))
 
