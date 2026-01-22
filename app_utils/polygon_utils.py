@@ -56,13 +56,6 @@ def build_objects_from_result(
         conf_arr = None
 
     has_masks = getattr(result, "masks", None) is not None
-    
-    # 根據 split_components 決定是否要預先讀取 mask data
-    mask_data = None
-    if has_masks and split_components:
-        # .data 是 (N, H, W) 的 tensor
-        mask_data = result.masks.data.cpu().numpy()
-
     raw_polys = getattr(result.masks, "xy", None) if has_masks else None
     
     objects: List[Dict[str, Any]] = []
@@ -78,72 +71,77 @@ def build_objects_from_result(
 
         # --- 產生 polygons ---
         if has_masks:
-            if split_components and mask_data is not None and i < len(mask_data):
-                # 【模式 A】拆分模式：使用 OpenCV 找出連通域
-                
-                # 1. 取得原始 mask (H, W)，並二值化
-                #    YOLO mask data 是 0-1 float，乘以 255 轉 uint8
-                single_mask = (mask_data[i] * 255).astype(np.uint8)
-                
-                # 2. 找出連通域
-                num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(single_mask, connectivity=8)
+            if split_components:
+                # 【模式 A】拆分模式：使用 OpenCV 找出連通域 (修正版)
+                if raw_polys is not None and i < len(raw_polys):
+                    # 1. 取得原始圖片尺寸，建立全尺寸的空白 mask
+                    h, w = result.orig_shape[:2]
+                    full_mask = np.zeros((h, w), dtype=np.uint8)
 
-                # 遍歷所有找到的 component (label 0 是背景，跳過)
-                for label in range(1, num_labels):
-                    # 3. 建立該 component 的 mask
-                    component_mask = np.zeros_like(single_mask)
-                    component_mask[labels == label] = 255
+                    # 2. 將已在正確座標系上的 polygon 畫到 full_mask 上
+                    item = raw_polys[i]
+                    segments = item if isinstance(item, list) else [item]
+                    pts_list = [np.asarray(seg, dtype=np.int32) for seg in segments if seg is not None and len(seg) >= 3]
+                    if pts_list:
+                        cv2.fillPoly(full_mask, pts_list, color=255)
                     
-                    # 4. 從 mask 找輪廓 (contour)
-                    contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    
-                    if not contours:
-                        continue
+                    # 3. 在這個準確的 full_mask 上找連通域
+                    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(full_mask, connectivity=8)
 
-                    # 通常只會有一個主輪廓，但以防萬一
-                    for contour in contours:
-                        arr = contour.reshape(-1, 2).astype(np.float32)
-                        if arr.shape[0] < 3:
-                            continue
-
-                        # 5. 重新計算該分量的 BBox
-                        new_x1, new_y1, w, h = cv2.boundingRect(arr)
-                        new_x2, new_y2 = new_x1 + w, new_y1 + h
+                    # 遍歷所有找到的 component (label 0 是背景，跳過)
+                    for label in range(1, num_labels):
+                        # 4. 建立該 component 的 mask
+                        component_mask = np.zeros_like(full_mask)
+                        component_mask[labels == label] = 255
                         
-                        # 6. 簡化多邊形
+                        # 5. 從 mask 找輪廓 (contour)
+                        contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        
+                        if not contours: continue
+
+                        for contour in contours:
+                            arr = contour.reshape(-1, 2).astype(np.float32)
+                            if arr.shape[0] < 3: continue
+
+                            # 6. 重新計算該分量的 BBox
+                            new_x1, new_y1, b_w, b_h = cv2.boundingRect(arr)
+                            new_x2, new_y2 = new_x1 + b_w, new_y1 + b_h
+                            
+                            # 7. 簡化多邊形
+                            arr_simplified = _simplify_segment(arr, simplify_mode, simplify_eps_ratio)
+                            
+                            objects.append({
+                                "class_id": int(cid),
+                                "class_name": class_name,
+                                "confidence": conf,
+                                "bbox_xyxy": [float(new_x1), float(new_y1), float(new_x2), float(new_y2)],
+                                "polygons": [arr_simplified.astype(float).tolist()],
+                            })
+                
+            else:
+                # 【模式 B】不拆分模式：維持原樣，一個物件可包含多個 polygons
+                if raw_polys is not None and i < len(raw_polys):
+                    item = raw_polys[i]
+                    segments = item if isinstance(item, list) else [item]
+                    
+                    polys = []
+                    for seg in segments:
+                        if seg is None: continue
+                        arr = np.asarray(seg, dtype=np.float32)
+                        if arr.ndim == 1: arr = arr.reshape(-1, 2)
+                        if arr.shape[0] < 3: continue
+                        
                         arr_simplified = _simplify_segment(arr, simplify_mode, simplify_eps_ratio)
-                        
+                        polys.append(arr_simplified.astype(float).tolist())
+                    
+                    if polys:
                         objects.append({
                             "class_id": int(cid),
                             "class_name": class_name,
                             "confidence": conf,
-                            "bbox_xyxy": [float(new_x1), float(new_y1), float(new_x2), float(new_y2)],
-                            "polygons": [arr_simplified.astype(float).tolist()],
+                            "bbox_xyxy": [orig_x1, orig_y1, orig_x2, orig_y2],
+                            "polygons": polys,
                         })
-
-            elif raw_polys is not None and i < len(raw_polys):
-                # 【模式 B】不拆分模式：維持原樣，一個物件可包含多個 polygons
-                item = raw_polys[i]
-                segments = item if isinstance(item, list) else [item]
-                
-                polys = []
-                for seg in segments:
-                    if seg is None: continue
-                    arr = np.asarray(seg, dtype=np.float32)
-                    if arr.ndim == 1: arr = arr.reshape(-1, 2)
-                    if arr.shape[0] < 3: continue
-                    
-                    arr_simplified = _simplify_segment(arr, simplify_mode, simplify_eps_ratio)
-                    polys.append(arr_simplified.astype(float).tolist())
-                
-                if polys:
-                    objects.append({
-                        "class_id": int(cid),
-                        "class_name": class_name,
-                        "confidence": conf,
-                        "bbox_xyxy": [orig_x1, orig_y1, orig_x2, orig_y2],
-                        "polygons": polys,
-                    })
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon
             objects.append({
