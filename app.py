@@ -18,6 +18,19 @@ from app_utils.export_utils import export_results_cache
 
 
 def app():
+    def compute_default_eps_ratio(
+        width: int,
+        height: int,
+        base_pixels: float = 5.0,
+        min_ratio: float = 0.001,
+        max_ratio: float = 0.05,
+    ) -> float:
+        if width <= 0 or height <= 0:
+            return 0.01
+        max_dim = max(width, height)
+        ratio = base_pixels / float(max_dim)
+        return max(min_ratio, min(max_ratio, ratio))
+
     with gr.Blocks() as demo:
         # === 初始模型清單（預設 + 已儲存自訂） ===
         initial_choices, initial_saved_custom = load_model_choices()
@@ -153,6 +166,22 @@ def app():
             fn=update_visibility,
             inputs=[input_type],
             outputs=[image, video, output_gallery, video_group],
+        )
+
+        def update_eps_ratio_from_image(image_in) -> gr.Update:
+            if image_in is None:
+                return gr.update()
+            try:
+                width, height = image_in.size
+            except Exception:
+                return gr.update()
+            default_ratio = compute_default_eps_ratio(int(width), int(height))
+            return gr.update(value=default_ratio)
+
+        image.change(
+            fn=update_eps_ratio_from_image,
+            inputs=[image],
+            outputs=[simplify_eps_ratio],
         )
 
         # ======== 主推論函式 ========
