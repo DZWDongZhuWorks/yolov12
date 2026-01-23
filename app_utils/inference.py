@@ -106,7 +106,7 @@ def annotate_from_results(
     show_polygons: bool,
     show_confidence: bool,
     simplify_mode: str,
-    simplify_eps_ratio: float,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]] = None,
 ):
     """
@@ -127,7 +127,7 @@ def annotate_from_results(
         result,
         allowed_class_ids=allowed_class_ids,
         simplify_mode=simplify_mode,
-        simplify_eps_ratio=simplify_eps_ratio,
+        simplify_eps_coeff=simplify_eps_coeff,
     )
     
     # ---- 先畫 polygon 邊界（如果有 mask） ----
@@ -274,6 +274,239 @@ def split_connection_contours(result):
     return updated
 
 
+def parse_mask_steps(steps_text: Optional[str]) -> List[Tuple[str, int]]:
+    if not steps_text:
+        return []
+    raw_parts = []
+    for part in steps_text.replace("\n", ",").split(","):
+        cleaned = part.strip()
+        if cleaned:
+            raw_parts.append(cleaned)
+    steps: List[Tuple[str, int]] = []
+    for item in raw_parts:
+        if ":" in item:
+            name, count_text = item.split(":", 1)
+        else:
+            name, count_text = item, "1"
+        name = name.strip().lower()
+        try:
+            count = int(count_text.strip())
+        except Exception:
+            count = 1
+        if count <= 0:
+            continue
+        if name == "contour_split":
+            name = "split"
+        if name not in {
+            "erode",
+            "dilate",
+            "blur",
+            "remove_small",
+            "fill_holes",
+            "split",
+        }:
+            continue
+        steps.append((name, count))
+    return steps
+
+
+def _ensure_odd(value: int) -> int:
+    if value <= 1:
+        return 1
+    return value if value % 2 == 1 else value + 1
+
+
+def _split_components(binary: np.ndarray) -> List[np.ndarray]:
+    contours = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+    if len(contours) <= 1:
+        return [binary]
+    components: List[np.ndarray] = []
+    for contour in contours:
+        if contour.shape[0] < 3:
+            continue
+        component = np.zeros_like(binary)
+        cv2.drawContours(component, [contour], -1, 1, thickness=-1)
+        if component.sum() > 0:
+            components.append(component)
+    return components or [binary]
+
+
+def _remove_small_components(binary: np.ndarray, min_area: int) -> np.ndarray:
+    if min_area <= 0:
+        return binary
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if num_labels <= 1:
+        return binary
+    output = np.zeros_like(binary)
+    for label in range(1, num_labels):
+        area = stats[label, cv2.CC_STAT_AREA]
+        if area >= min_area:
+            output[labels == label] = 1
+    return output
+
+
+def _fill_small_holes(binary: np.ndarray, max_hole_area: int) -> np.ndarray:
+    if max_hole_area <= 0:
+        return binary
+    h, w = binary.shape[:2]
+    inverted = (1 - binary).astype(np.uint8)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(inverted, connectivity=8)
+    if num_labels <= 1:
+        return binary
+    output = binary.copy()
+    for label in range(1, num_labels):
+        x, y, width, height, area = stats[label]
+        touches_border = x == 0 or y == 0 or (x + width) == w or (y + height) == h
+        if touches_border:
+            continue
+        if area <= max_hole_area:
+            output[labels == label] = 1
+    return output
+
+
+def apply_mask_optimizations_to_result(
+    result,
+    enabled: bool,
+    steps_text: Optional[str],
+    morph_kernel: int,
+    blur_kernel: int,
+    blur_threshold: float,
+    min_component_area: int,
+    max_hole_area: int,
+):
+    steps = parse_mask_steps(steps_text)
+    if not enabled or not steps:
+        return result
+    if not hasattr(result, "masks") or result.masks is None:
+        return result
+    if not hasattr(result, "boxes") or result.boxes is None:
+        return result
+
+    masks = result.masks.data
+    boxes_data = result.boxes.data
+    if masks is None or len(masks) == 0 or boxes_data is None or len(boxes_data) == 0:
+        return result
+
+    orig_shape = result.orig_shape
+    mask_shape = masks.shape[1:]
+    new_masks: List[np.ndarray] = []
+    new_boxes: List[List[float]] = []
+
+    boxes_np = boxes_data.detach().cpu().numpy()
+    is_track = result.boxes.is_track
+
+    for i, mask_tensor in enumerate(masks):
+        mask_np = mask_tensor.detach().cpu().numpy()
+        binaries = [(mask_np > 0.5).astype(np.uint8)]
+        kernel_size = _ensure_odd(morph_kernel)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        blur_size = _ensure_odd(blur_kernel)
+
+        for step_name, count in steps:
+            if not binaries:
+                break
+            if step_name == "erode":
+                for _ in range(count):
+                    binaries = [cv2.erode(b, kernel, iterations=1) for b in binaries]
+            elif step_name == "dilate":
+                for _ in range(count):
+                    binaries = [cv2.dilate(b, kernel, iterations=1) for b in binaries]
+            elif step_name == "blur":
+                for _ in range(count):
+                    blurred = [
+                        cv2.GaussianBlur(b.astype(np.float32), (blur_size, blur_size), 0)
+                        for b in binaries
+                    ]
+                    binaries = [(b >= blur_threshold).astype(np.uint8) for b in blurred]
+            elif step_name == "remove_small":
+                for _ in range(count):
+                    binaries = [_remove_small_components(b, min_component_area) for b in binaries]
+            elif step_name == "fill_holes":
+                for _ in range(count):
+                    binaries = [_fill_small_holes(b, max_hole_area) for b in binaries]
+            elif step_name == "split":
+                for _ in range(count):
+                    split_bins: List[np.ndarray] = []
+                    for b in binaries:
+                        split_bins.extend(_split_components(b))
+                    binaries = split_bins
+
+        for optimized in binaries:
+            if optimized.sum() == 0:
+                continue
+
+            ys, xs = np.where(optimized > 0)
+            if len(xs) == 0 or len(ys) == 0:
+                continue
+            x_min, x_max = xs.min(), xs.max()
+            y_min, y_max = ys.min(), ys.max()
+
+            coords = np.array([[x_min, y_min], [x_max, y_max]], dtype=np.float32)
+            coords = ops.scale_coords(mask_shape, coords, orig_shape, normalize=False)
+            x_min, y_min = coords[0]
+            x_max, y_max = coords[1]
+
+            if is_track:
+                track_id = float(boxes_np[i][4])
+                conf = float(boxes_np[i][5])
+                cls = float(boxes_np[i][6])
+                new_boxes.append([x_min, y_min, x_max, y_max, track_id, conf, cls])
+            else:
+                conf = float(boxes_np[i][4])
+                cls = float(boxes_np[i][5])
+                new_boxes.append([x_min, y_min, x_max, y_max, conf, cls])
+
+            new_masks.append(optimized.astype(mask_np.dtype))
+
+    if not new_boxes:
+        return result
+
+    new_boxes_tensor = torch.tensor(new_boxes, device=boxes_data.device, dtype=boxes_data.dtype)
+    new_masks_tensor = torch.tensor(np.stack(new_masks, axis=0), device=masks.device, dtype=masks.dtype)
+
+    updated = result.new()
+    updated.update(boxes=new_boxes_tensor, masks=new_masks_tensor)
+    updated.names = result.names
+    updated.path = result.path
+    return updated
+
+
+def apply_mask_optimizations(
+    results_cache: Dict[str, Any],
+    enabled: bool,
+    steps_text: Optional[str],
+    morph_kernel: int,
+    blur_kernel: int,
+    blur_threshold: float,
+    min_component_area: int,
+    max_hole_area: int,
+) -> Dict[str, Any]:
+    steps = parse_mask_steps(steps_text)
+    if not results_cache or not enabled or not steps:
+        return results_cache
+
+    updated_cache: Dict[str, Any] = {}
+    for mid, results in results_cache.items():
+        if not results:
+            updated_cache[mid] = results
+            continue
+        updated_cache[mid] = [
+            apply_mask_optimizations_to_result(
+                res,
+                enabled,
+                steps_text,
+                morph_kernel,
+                blur_kernel,
+                blur_threshold,
+                min_component_area,
+                max_hole_area,
+            )
+            for res in results
+        ]
+
+    return updated_cache
+
+
 def apply_connection_contour_split(results_cache: Dict[str, Any]) -> Dict[str, Any]:
     """
     對 results_cache 內的結果做連通元件拆分，維持結果型態供後續流程使用。
@@ -306,7 +539,7 @@ def infer_image_single(
     show_polygons: bool,
     show_confidence: bool,
     simplify_mode: str,
-    simplify_eps_ratio: float,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
@@ -322,7 +555,7 @@ def infer_image_single(
         show_polygons,
         show_confidence,
         simplify_mode,
-        simplify_eps_ratio,
+        simplify_eps_coeff,
         allowed_class_ids,
     )
     # Gradio Image 用 RGB
@@ -341,8 +574,15 @@ def infer_video_single(
     show_polygons: bool,
     show_confidence: bool,
     simplify_mode: str,
-    simplify_eps_ratio: float,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
+    mask_opt_enabled: bool,
+    mask_opt_steps: Optional[str],
+    morph_kernel: int,
+    blur_kernel: int,
+    blur_threshold: float,
+    min_component_area: int,
+    max_hole_area: int,
 ):
     model = YOLO(model_id)
 
@@ -358,6 +598,7 @@ def infer_video_single(
         fps,
         (frame_width, frame_height),
     )
+    mask_steps = parse_mask_steps(mask_opt_steps)
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -367,6 +608,17 @@ def infer_video_single(
         if device:
             predict_kwargs["device"] = device
         results = model.predict(**predict_kwargs)
+        if mask_opt_enabled and mask_steps:
+            results[0] = apply_mask_optimizations_to_result(
+                results[0],
+                mask_opt_enabled,
+                mask_opt_steps,
+                morph_kernel,
+                blur_kernel,
+                blur_threshold,
+                min_component_area,
+                max_hole_area,
+            )
         annotated_bgr = annotate_from_results(
             results[0],
             label_mode,
@@ -375,7 +627,7 @@ def infer_video_single(
             show_polygons,
             show_confidence,
             simplify_mode,
-            simplify_eps_ratio,
+            simplify_eps_coeff,
             allowed_class_ids,
         )
         out.write(annotated_bgr)
@@ -397,7 +649,7 @@ def yolov12_multi_inference_image(
     show_polygons: bool,
     show_confidence: bool,
     simplify_mode: str,
-    simplify_eps_ratio: float,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
 ):
     """
@@ -422,7 +674,7 @@ def yolov12_multi_inference_image(
             show_polygons,
             show_confidence,
             simplify_mode,
-            simplify_eps_ratio,
+            simplify_eps_coeff,
             allowed_class_ids,
         )
         gallery_items.append((img_rgb, mid))
@@ -443,8 +695,15 @@ def yolov12_multi_inference_video(
     show_polygons: bool,
     show_confidence: bool,
     simplify_mode: str,
-    simplify_eps_ratio: float,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
+    mask_opt_enabled: bool,
+    mask_opt_steps: Optional[str],
+    morph_kernel: int,
+    blur_kernel: int,
+    blur_threshold: float,
+    min_component_area: int,
+    max_hole_area: int,
 ):
     """
     同一支影片對多個模型推論。
@@ -470,8 +729,15 @@ def yolov12_multi_inference_video(
             show_polygons,
             show_confidence,
             simplify_mode,
-            simplify_eps_ratio,
+            simplify_eps_coeff,
             allowed_class_ids,
+            mask_opt_enabled,
+            mask_opt_steps,
+            morph_kernel,
+            blur_kernel,
+            blur_threshold,
+            min_component_area,
+            max_hole_area,
         )
         outs.append((mid, out_path))
 
@@ -511,7 +777,7 @@ def yolov12_inference_for_examples(
         True,   # show_polygons
         True,   # show_confidence
         "rdp",
-        0.01,
+        1.0,
         allowed_class_ids=None,
     )
     return gallery
