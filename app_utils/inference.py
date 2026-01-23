@@ -274,39 +274,68 @@ def split_connection_contours(result):
     return updated
 
 
-def parse_mask_steps(steps_text: Optional[str]) -> List[Tuple[str, int]]:
-    if not steps_text:
+def _normalize_mask_step_name(name: str) -> Optional[str]:
+    normalized = str(name or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized == "contour_split":
+        normalized = "split"
+    if normalized in {
+        "erode",
+        "dilate",
+        "blur",
+        "remove_small",
+        "fill_holes",
+        "split",
+    }:
+        return normalized
+    return None
+
+
+def parse_mask_steps(steps_input: Optional[Any]) -> List[Tuple[str, int]]:
+    if not steps_input:
         return []
-    raw_parts = []
-    for part in steps_text.replace("\n", ",").split(","):
-        cleaned = part.strip()
-        if cleaned:
-            raw_parts.append(cleaned)
     steps: List[Tuple[str, int]] = []
-    for item in raw_parts:
-        if ":" in item:
-            name, count_text = item.split(":", 1)
-        else:
-            name, count_text = item, "1"
-        name = name.strip().lower()
-        try:
-            count = int(count_text.strip())
-        except Exception:
-            count = 1
-        if count <= 0:
-            continue
-        if name == "contour_split":
-            name = "split"
-        if name not in {
-            "erode",
-            "dilate",
-            "blur",
-            "remove_small",
-            "fill_holes",
-            "split",
-        }:
-            continue
-        steps.append((name, count))
+
+    if isinstance(steps_input, str):
+        raw_parts = []
+        for part in steps_input.replace("\n", ",").split(","):
+            cleaned = part.strip()
+            if cleaned:
+                raw_parts.append(cleaned)
+        for item in raw_parts:
+            if ":" in item:
+                name, count_text = item.split(":", 1)
+            else:
+                name, count_text = item, "1"
+            normalized = _normalize_mask_step_name(name)
+            if not normalized:
+                continue
+            try:
+                count = int(str(count_text).strip())
+            except Exception:
+                count = 1
+            if count > 0:
+                steps.append((normalized, count))
+        return steps
+
+    if isinstance(steps_input, list):
+        for row in steps_input:
+            if not row:
+                continue
+            name = row[0] if len(row) > 0 else ""
+            count_val = row[1] if len(row) > 1 else 1
+            normalized = _normalize_mask_step_name(name)
+            if not normalized:
+                continue
+            try:
+                count = int(float(count_val))
+            except Exception:
+                count = 1
+            if count > 0:
+                steps.append((normalized, count))
+        return steps
+
     return steps
 
 

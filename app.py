@@ -78,11 +78,17 @@ def app():
                 show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
                 gr.Markdown("### Mask 優化（先處理 mask 再生成 polygon）")
                 mask_opt_enable = gr.Checkbox(value=False, label="啟用 Mask 優化")
-                mask_opt_steps = gr.Textbox(
-                    label="Mask 優化流程 (step:count, 逗號/換行分隔)",
-                    placeholder="erode:1, dilate:1, split:1, blur:1, remove_small:1, fill_holes:1",
-                    value="",
-                    lines=2,
+                gr.Markdown(
+                    "可用步驟：erode / dilate / split / blur / remove_small / fill_holes"
+                )
+                mask_opt_steps = gr.Dataframe(
+                    headers=["step", "count"],
+                    datatype=["str", "number"],
+                    label="Mask 優化流程（可調順序與次數）",
+                    value=[],
+                    row_count=5,
+                    col_count=2,
+                    interactive=True,
                 )
                 morph_kernel = gr.Slider(
                     label="Morph Kernel Size (odd)",
