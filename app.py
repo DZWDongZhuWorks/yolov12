@@ -109,6 +109,7 @@ def app():
                     col_count=(2, "fixed"),
                     wrap=True,
                     label="Mask 優化流程",
+                    type="array",
                 )
                 morph_kernel = gr.Slider(
                     label="Morph Kernel Size (odd)",
@@ -512,7 +513,14 @@ def app():
 
         # ======== 即時重繪（只針對 Image 模式） ========
         def add_mask_step(steps, method, count):
-            rows = steps or []
+            if steps is None:
+                rows = []
+            elif hasattr(steps, "tolist"):
+                rows = steps.tolist()
+            elif isinstance(steps, list):
+                rows = list(steps)
+            else:
+                rows = []
             rows.append([method, int(count)])
             return rows
 

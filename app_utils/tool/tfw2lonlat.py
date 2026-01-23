@@ -288,7 +288,7 @@ def main():
     parser = argparse.ArgumentParser(description="Pixel JSON to GeoJSON Converter (Crop Supported)")
     
     parser.add_argument("--tfw", required=True, help="原始大圖的 World File (.tfw/.jgw) 路徑")
-    parser.add_argument("--input", required=True, help="輸入 JSON 檔案路徑")
+    parser.add_argument("--json", required=True, help="輸入 JSON 檔案路徑")
     parser.add_argument("--output", required=True, help="輸出 GeoJSON 檔案路徑")
     
     # 座標系統設定
@@ -301,7 +301,7 @@ def main():
     args = parser.parse_args()
 
     tfw_path = Path(args.tfw)
-    input_path = Path(args.input)
+    json_path = Path(args.json)
     output_path = Path(args.output)
 
     # 1. 準備 WorldFile
@@ -317,8 +317,8 @@ def main():
     )
 
     # 3. 讀取輸入資料
-    print(f"[Info] 讀取輸入 JSON: {input_path}")
-    with input_path.open("r", encoding="utf-8") as f:
+    print(f"[Info] 讀取輸入 JSON: {json_path}")
+    with json_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
     print(f"[Info] 處理裁切偏移: X={args.crop_x}, Y={args.crop_y}")

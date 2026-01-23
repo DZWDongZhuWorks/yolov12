@@ -275,8 +275,16 @@ def split_connection_contours(result):
 
 
 def parse_mask_steps(steps_input) -> List[Tuple[str, int]]:
-    if not steps_input:
+    if steps_input is None:
         return []
+    
+    # Check for empty state safely (handles pandas DataFrames)
+    if hasattr(steps_input, "empty"):
+        if steps_input.empty:
+            return []
+    elif not steps_input:
+        return []
+
     steps: List[Tuple[str, int]] = []
     if isinstance(steps_input, str):
         raw_parts = []
@@ -309,8 +317,16 @@ def parse_mask_steps(steps_input) -> List[Tuple[str, int]]:
                 continue
             steps.append((name, count))
     else:
+        # Handle DataFrame or list of lists
+        iterable = steps_input
+        if hasattr(steps_input, "values") and hasattr(steps_input, "tolist"):
+            try:
+                iterable = steps_input.values.tolist()
+            except Exception:
+                pass
+
         try:
-            for row in steps_input:
+            for row in iterable:
                 if not row or len(row) < 1:
                     continue
                 name = str(row[0]).strip().lower()
