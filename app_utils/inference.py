@@ -293,11 +293,18 @@ def _normalize_mask_step_name(name: str) -> Optional[str]:
 
 
 def parse_mask_steps(steps_input: Optional[Any]) -> List[Tuple[str, int]]:
-    if not steps_input:
+    if steps_input is None:
         return []
     steps: List[Tuple[str, int]] = []
 
+    if hasattr(steps_input, "empty") and hasattr(steps_input, "values"):
+        if steps_input.empty:
+            return []
+        steps_input = steps_input.values.tolist()
+
     if isinstance(steps_input, str):
+        if not steps_input.strip():
+            return []
         raw_parts = []
         for part in steps_input.replace("\n", ",").split(","):
             cleaned = part.strip()
