@@ -3,15 +3,17 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import cv2
 
+DEFAULT_SIMPLIFY_EPS_RATIO = 0.01
 
-def _simplify_segment(seg: np.ndarray, mode: str, eps_ratio: float) -> np.ndarray:
+
+def _simplify_segment(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarray:
     """
     seg: (N, 2) float32
     mode:
       - "none"        : 不做簡化
       - "convex_hull" : 取凸包
       - "rdp"         : 用 approxPolyDP 做 RDP 簡化
-    eps_ratio: 相對於「該 segment 外接矩形的較長邊」的比例
+    eps_coeff: eps 係數（會乘上預設比例）
     """
     if seg.shape[0] <= 3 or mode == "none":
         return seg
@@ -24,17 +26,30 @@ def _simplify_segment(seg: np.ndarray, mode: str, eps_ratio: float) -> np.ndarra
     x_min, y_min = seg.min(axis=0)
     x_max, y_max = seg.max(axis=0)
     size = max(x_max - x_min, y_max - y_min)
-    eps = float(size) * eps_ratio
+    eps = float(size) * DEFAULT_SIMPLIFY_EPS_RATIO * eps_coeff
 
     approx = cv2.approxPolyDP(seg, eps, closed=True)
     return approx.reshape(-1, 2)
+
+
+def _close_ring(points: List[List[float]]) -> List[List[float]]:
+    """
+    確保 polygon ring 首尾相同（GeoJSON 需要閉合 ring）。
+    """
+    if len(points) < 3:
+        return points
+    first = points[0]
+    last = points[-1]
+    if len(first) >= 2 and len(last) >= 2 and first[0] == last[0] and first[1] == last[1]:
+        return points
+    return points + [first]
 
 
 def build_objects_from_result(
     result,
     allowed_class_ids: Optional[List[int]] = None,
     simplify_mode: str = "none",      # "none" / "convex_hull" / "rdp"
-    simplify_eps_ratio: float = 0.01, # 只對 "rdp" 有效
+    simplify_eps_coeff: float = 1.0, # 只對 "rdp" 有效
 ) -> List[Dict[str, Any]]:
     """
     從單一個 YOLO result 產生標準化的物件資訊（含 polygon）。
@@ -86,17 +101,19 @@ def build_objects_from_result(
                 if arr.shape[0] < 3:
                     continue
 
-                arr = _simplify_segment(arr, simplify_mode, simplify_eps_ratio)
-                polys.append(arr.astype(float).tolist())
+                arr = _simplify_segment(arr, simplify_mode, simplify_eps_coeff)
+                polys.append(_close_ring(arr.astype(float).tolist()))
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon
             polys.append(
-                [
-                    [x1, y1],
-                    [x2, y1],
-                    [x2, y2],
-                    [x1, y2],
-                ]
+                _close_ring(
+                    [
+                        [x1, y1],
+                        [x2, y1],
+                        [x2, y2],
+                        [x1, y2],
+                    ]
+                )
             )
 
         objects.append(

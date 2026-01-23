@@ -9,6 +9,7 @@ from app_utils.inference import (
     names_to_choice_list,
     parse_selected_to_ids,
     annotate_from_results,
+    apply_mask_optimizations,
     yolov12_multi_inference_image,
     yolov12_multi_inference_video,
     yolov12_inference_for_examples,
@@ -22,211 +23,194 @@ def app():
     with gr.Blocks() as demo:
         # === 初始模型清單（預設 + 已儲存自訂） ===
         initial_choices, initial_saved_custom = load_model_choices()
-        
-        # ==================== 全局 State ====================
+
+        with gr.Row():
+            # ======================= 左側：輸入與控制面板 =======================
+            with gr.Column():
+                # 影像 / 影片輸入
+                image = gr.Image(type="pil", label="Image", visible=True)
+                video = gr.Video(label="Video", visible=False)
+                input_type = gr.Radio(
+                    choices=["Image", "Video"],
+                    value="Image",
+                    label="Input Type",
+                )
+
+                # 記錄自訂模型清單（不包含 DEFAULT_MODELS）
+                saved_models_state = gr.State(value=initial_saved_custom)
+
+                # 多模型 Dropdown（支援自訂、可多選）
+                model_ids = gr.Dropdown(
+                    label="Models (多選比較，最多 5)",
+                    choices=initial_choices,
+                    value=["yolov12m.pt"],
+                    allow_custom_value=True,
+                    multiselect=True,
+                )
+
+                image_size = gr.Slider(
+                    label="Image Size",
+                    minimum=320,
+                    maximum=2560,
+                    step=32,
+                    value=640,
+                )
+                conf_threshold = gr.Slider(
+                    label="Confidence Threshold",
+                    minimum=0.0,
+                    maximum=1.0,
+                    step=0.01,
+                    value=0.25,
+                )
+                device_select = gr.Dropdown(
+                    label="Device",
+                    choices=["auto", "cpu", "cuda:0", "cuda:1", "mps"],
+                    value="auto",
+                    allow_custom_value=True,
+                )
+
+                label_mode = gr.Radio(
+                    choices=["隱藏", "顯示 class id", "顯示 class name"],
+                    value="顯示 class name",
+                    label="標籤模式",
+                )
+                show_boxes = gr.Checkbox(value=True, label="顯示 bbox 外框")
+                show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
+                show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")  # ★ 新增
+                show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
+                gr.Markdown("### Mask 優化（先處理 mask 再生成 polygon）")
+                mask_opt_enable = gr.Checkbox(value=False, label="啟用 Mask 優化")
+                with gr.Row():
+                    mask_opt_method = gr.Dropdown(
+                        label="新增步驟",
+                        choices=[
+                            "erode",
+                            "dilate",
+                            "split",
+                            "blur",
+                            "remove_small",
+                            "fill_holes",
+                        ],
+                        value="erode",
+                    )
+                    mask_opt_count = gr.Slider(
+                        label="次數",
+                        minimum=1,
+                        maximum=10,
+                        step=1,
+                        value=1,
+                    )
+                    mask_opt_add = gr.Button(value="加入步驟", variant="secondary")
+                gr.Markdown(
+                    "可直接編輯下表調整順序與次數，空白行會被忽略。"
+                )
+                mask_opt_steps = gr.Dataframe(
+                    headers=["step", "count"],
+                    datatype=["str", "number"],
+                    row_count=0,
+                    col_count=(2, "fixed"),
+                    wrap=True,
+                    label="Mask 優化流程",
+                    type="array",
+                )
+                morph_kernel = gr.Slider(
+                    label="Morph Kernel Size (odd)",
+                    minimum=1,
+                    maximum=15,
+                    step=2,
+                    value=3,
+                )
+                blur_kernel = gr.Slider(
+                    label="Blur Kernel Size (odd)",
+                    minimum=1,
+                    maximum=15,
+                    step=2,
+                    value=3,
+                )
+                blur_threshold = gr.Slider(
+                    label="Blur Threshold",
+                    minimum=0.1,
+                    maximum=0.9,
+                    step=0.05,
+                    value=0.5,
+                )
+                min_component_area = gr.Slider(
+                    label="Min Component Area",
+                    minimum=0,
+                    maximum=5000,
+                    step=10,
+                    value=0,
+                )
+                max_hole_area = gr.Slider(
+                    label="Max Hole Area",
+                    minimum=0,
+                    maximum=5000,
+                    step=10,
+                    value=0,
+                )
+                polygon_simplify = gr.Radio(
+                    choices=["none", "convex_hull", "rdp"],
+                    value="rdp",
+                    label="Polygon Simplify Mode",
+                )
+                simplify_eps_coeff = gr.Slider(
+                    label="Polygon Simplify Epsilon Coefficient (Base ratio 0.01)",
+                    minimum=0.1,
+                    maximum=5.0,
+                    step=0.1,
+                    value=1.0,
+                )
+
+                yolov12_infer = gr.Button(value="Detect Objects (Run)")
+
+                # 匯出 JSON（polygon）
+                export_btn = gr.Button(
+                    value="Export JSON (Polygons)",
+                    variant="primary",
+                )
+                export_files = gr.Files(label="Exported JSON Files")
+
+                # 類別篩選
+                gr.Markdown("### 類別篩選（預設全選）")
+                with gr.Row():
+                    class_selector = gr.CheckboxGroup(
+                        label="類別（ID: 名稱）",
+                        choices=[],
+                        value=[],
+                        interactive=True,
+                    )
+                with gr.Row():
+                    select_all_btn = gr.Button(value="選擇全選", variant="secondary")
+                    clear_all_btn = gr.Button(value="取消全選", variant="secondary")
+
+                # 保留目前 choices 狀態（避免僅從元件讀不到 choices）
+                class_choices_state = gr.State(value=[])
+                # 保存當前影像中繼資訊（檔名、寬高）
+                image_meta_state = gr.State(value=None)
+
+            # ======================= 右側：輸出 =======================
+            with gr.Column():
+                # 影像輸出：Gallery 並排
+                output_gallery = gr.Gallery(
+                    label="Annotated Images（多模型比較）",
+                    columns=2,
+                    preview=True,
+                    visible=True,
+                )
+                # 影片輸出：最多 5 路
+                with gr.Group(visible=False) as video_group:
+                    with gr.Row():
+                        v1 = gr.Video(label="Model #1")
+                        v2 = gr.Video(label="Model #2")
+                    with gr.Row():
+                        v3 = gr.Video(label="Model #3")
+                        v4 = gr.Video(label="Model #4")
+                    v5 = gr.Video(label="Model #5")
+
         # 快取最後一次「影像」結果（每個模型一份）
         # 型別: Dict[str, results]
         last_results = gr.State(value=None)
-        
-        # 保留目前 choices 狀態（避免僅從元件讀不到 choices）
-        class_choices_state = gr.State(value=[])
-        # 保存當前影像中繼資訊（檔名、寬高）
-        image_meta_state = gr.State(value=None)
-        # 記錄自訂模型清單（不包含 DEFAULT_MODELS）
-        saved_models_state = gr.State(value=initial_saved_custom)
-        
-        # ==================== Tabs ====================
-        with gr.Tabs():
-            # ========== Tab 1: Main Detection ==========
-            with gr.Tab("🎯 Object Detection"):
-                with gr.Row():
-                    # ======================= 左側：輸入與控制面板 =======================
-                    with gr.Column():
-                        # 影像 / 影片輸入
-                        image = gr.Image(type="pil", label="Image", visible=True)
-                        video = gr.Video(label="Video", visible=False)
-                        input_type = gr.Radio(
-                            choices=["Image", "Video"],
-                            value="Image",
-                            label="Input Type",
-                        )
-
-                        # 多模型 Dropdown（支援自訂、可多選）
-                        model_ids = gr.Dropdown(
-                            label="Models (多選比較，最多 5)",
-                            choices=initial_choices,
-                            value=["yolov12m.pt"],
-                            allow_custom_value=True,
-                            multiselect=True,
-                        )
-
-                        image_size = gr.Slider(
-                            label="Image Size",
-                            minimum=320,
-                            maximum=2560,
-                            step=32,
-                            value=640,
-                        )
-                        conf_threshold = gr.Slider(
-                            label="Confidence Threshold",
-                            minimum=0.0,
-                            maximum=1.0,
-                            step=0.01,
-                            value=0.25,
-                        )
-
-                        label_mode = gr.Radio(
-                            choices=["隱藏", "顯示 class id", "顯示 class name"],
-                            value="顯示 class name",
-                            label="標籤模式",
-                        )
-                        show_boxes = gr.Checkbox(value=True, label="顯示 bbox 外框")
-                        show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
-                        show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")  # ★ 新增
-                        show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
-
-                        yolov12_infer = gr.Button(value="Detect Objects (Run)")
-
-                        # 匯出 JSON（polygon）
-                        export_btn = gr.Button(
-                            value="Export JSON (Polygons)",
-                            variant="primary",
-                        )
-                        export_files = gr.Files(label="Exported JSON Files")
-
-                        # 類別篩選
-                        gr.Markdown("### 類別篩選（預設全選）")
-                        with gr.Row():
-                            class_selector = gr.CheckboxGroup(
-                                label="類別（ID: 名稱）",
-                                choices=[],
-                                value=[],
-                                interactive=True,
-                            )
-                        with gr.Row():
-                            select_all_btn = gr.Button(value="選擇全選", variant="secondary")
-                            clear_all_btn = gr.Button(value="取消全選", variant="secondary")
-
-                    # ======================= 右側：輸出 =======================
-                    with gr.Column():
-                        # 影像輸出：Gallery 並排
-                        output_gallery = gr.Gallery(
-                            label="Annotated Images（多模型比較）",
-                            columns=2,
-                            preview=True,
-                            visible=True,
-                        )
-                        # 影片輸出：最多 5 路
-                        with gr.Group(visible=False) as video_group:
-                            with gr.Row():
-                                v1 = gr.Video(label="Model #1")
-                                v2 = gr.Video(label="Model #2")
-                            with gr.Row():
-                                v3 = gr.Video(label="Model #3")
-                                v4 = gr.Video(label="Model #4")
-                            v5 = gr.Video(label="Model #5")
-            
-            # ========== Tab 2: Polygon Optimization Comparison ==========
-            with gr.Tab("🔍 Polygon Optimization"):
-                gr.Markdown("""
-                ### Polygon 優化比較工具
-                
-                使用此工具可以視覺化比較不同 polygon 簡化方法的效果。
-                
-                **使用步驟：**
-                1. 先在「Object Detection」標籤完成一次推論（需要有 mask 的結果）
-                2. 選擇要比較的優化方法
-                3. 調整參數（如 RDP epsilon 值）
-                4. 點擊「Compare Optimizations」查看比較結果
-                
-                **顏色說明：**
-                - 🟢 **淺綠色細線** = 原始 polygon（未簡化）
-                - 🔴 **彩色粗線+填充** = 簡化後的 polygon
-                - ⚪ **白色圓圈** = 簡化後的頂點
-                """)
-                
-                with gr.Row():
-                    # ========== 左側：控制面板 ==========
-                    with gr.Column(scale=1):
-                        gr.Markdown("### 比較設定")
-                        
-                        # 優化方法選擇
-                        comparison_methods = gr.CheckboxGroup(
-                            label="選擇要比較的優化方法",
-                            choices=[
-                                "Original (無簡化)",
-                                "RDP (ε=0.005)",
-                                "RDP (ε=0.01)",
-                                "RDP (ε=0.02)",
-                                "Convex Hull (凸包)",
-                            ],
-                            value=["Original (無簡化)", "RDP (ε=0.01)", "Convex Hull (凸包)"],
-                        )
-                        
-                        # 自訂 RDP epsilon
-                        gr.Markdown("#### 自訂 RDP 參數")
-                        custom_epsilon = gr.Slider(
-                            label="Custom RDP Epsilon",
-                            minimum=0.001,
-                            maximum=0.1,
-                            step=0.001,
-                            value=0.015,
-                        )
-                        use_custom_rdp = gr.Checkbox(
-                            label="加入自訂 RDP 到比較",
-                            value=False,
-                        )
-                        
-                        # 顯示選項
-                        gr.Markdown("#### 視覺化選項")
-                        show_vertices_comp = gr.Checkbox(
-                            label="顯示頂點",
-                            value=True,
-                        )
-                        
-                        # 執行比較按鈕
-                        compare_btn = gr.Button(
-                            value="🔍 Compare Optimizations",
-                            variant="primary",
-                            size="lg",
-                        )
-                        
-                        # 狀態提示
-                        status_text = gr.Markdown("ℹ️ 請先在 Object Detection 標籤完成推論")
-                        
-                        # 導出比較結果
-                        gr.Markdown("---")
-                        export_comparison_btn = gr.Button(
-                            value="💾 Export Comparison Results",
-                            variant="secondary",
-                        )
-                        export_comparison_files = gr.Files(label="Comparison Files")
-                    
-                    # ========== 右側：視覺化輸出 ==========
-                    with gr.Column(scale=2):
-                        gr.Markdown("### 比較結果")
-                        
-                        # 比較圖片 Gallery
-                        comparison_gallery = gr.Gallery(
-                            label="Polygon Optimization Comparison",
-                            columns=2,
-                            rows=2,
-                            height="auto",
-                            preview=True,
-                        )
-                        
-                        # 指標表格
-                        gr.Markdown("### 統計指標")
-                        metrics_table = gr.Markdown("尚無數據")
-                        
-                        # 詳細報告（可摺疊）
-                        with gr.Accordion("📊 詳細比較報告", open=False):
-                            detailed_report = gr.Textbox(
-                                label="Comparison Report",
-                                lines=15,
-                                max_lines=30,
-                                interactive=False,
-                            )
+        raw_results = gr.State(value=None)
 
         # ======== Input Type 切換：控制元件可視性 ========
         def update_visibility(input_type_val: str):
@@ -249,12 +233,22 @@ def app():
             model_ids_in,
             image_size_in,
             conf_th_in,
+            device_in,
             input_type_in,
             label_mode_in,
             show_boxes_in,
             show_masks_in,
             show_polygons_in, 
             show_conf_in,
+            mask_opt_enable_in,
+            mask_opt_steps_in,
+            morph_kernel_in,
+            blur_kernel_in,
+            blur_threshold_in,
+            min_component_area_in,
+            max_hole_area_in,
+            simplify_mode_in,
+            simplify_eps_coeff_in,
             saved_models_in,
             class_selected_items_in,
             class_choices_in,
@@ -272,6 +266,7 @@ def app():
                     gr.update(),  # output_gallery
                     gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),  # v1~v5
                     None,  # last_results
+                    None,  # raw_results
                     gr.update(choices=initial_choices, value=[]),  # model_ids
                     saved_models_in,  # saved_models_state
                     gr.update(),  # class_selector
@@ -299,6 +294,7 @@ def app():
                         gr.update(),
                         gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
                         None,
+                        None,
                         gr.update(choices=new_choices, value=mids),
                         new_saved,
                         gr.update(),  # class_selector
@@ -312,17 +308,32 @@ def app():
                     mids,
                     image_size_in,
                     conf_th_in,
+                    None if device_in == "auto" else device_in,
                     label_mode_in,
                     show_boxes_in,
                     show_masks_in,
                     show_polygons_in, 
                     show_conf_in,
+                    simplify_mode_in,
+                    simplify_eps_coeff_in,
                     allowed_class_ids=allowed_ids,
+                )
+
+                raw_results_cache = results_cache
+                results_cache = apply_mask_optimizations(
+                    results_cache,
+                    mask_opt_enable_in,
+                    mask_opt_steps_in,
+                    morph_kernel_in,
+                    blur_kernel_in,
+                    blur_threshold_in,
+                    min_component_area_in,
+                    max_hole_area_in,
                 )
 
                 # 4-2) 從第一個結果建立類別選單
                 try:
-                    first_result = next(iter(results_cache.values()))[0]
+                    first_result = next(iter(raw_results_cache.values()))[0]
                     names = getattr(first_result, "names", {}) or {}
                 except Exception:
                     names = {}
@@ -391,6 +402,7 @@ def app():
                     gr.update(value=None, label="Model #4"),
                     gr.update(value=None, label="Model #5"),
                     results_cache,  # last_results
+                    raw_results_cache,  # raw_results
                     gr.update(choices=new_choices, value=mids),  # model_ids
                     new_saved,  # saved_models_state
                     class_selector_update,
@@ -405,6 +417,7 @@ def app():
                         gr.update(),
                         gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
                         None,
+                        None,
                         gr.update(choices=new_choices, value=mids),
                         new_saved,
                         gr.update(),  # class_selector
@@ -417,12 +430,22 @@ def app():
                     mids,
                     image_size_in,
                     conf_th_in,
+                    None if device_in == "auto" else device_in,
                     label_mode_in,
                     show_boxes_in,
                     show_masks_in,
                     show_polygons_in, 
                     show_conf_in,
+                    simplify_mode_in,
+                    simplify_eps_coeff_in,
                     allowed_class_ids=allowed_ids,
+                    mask_opt_enable=mask_opt_enable_in,
+                    mask_opt_steps=mask_opt_steps_in,
+                    morph_kernel=morph_kernel_in,
+                    blur_kernel=blur_kernel_in,
+                    blur_threshold=blur_threshold_in,
+                    min_component_area=min_component_area_in,
+                    max_hole_area=max_hole_area_in,
                 )
 
                 video_updates = [gr.update(value=None)] * 5
@@ -437,6 +460,7 @@ def app():
                     video_updates[3],
                     video_updates[4],
                     None,  # last_results（影片不快取）
+                    None,  # raw_results
                     gr.update(choices=new_choices, value=mids),
                     new_saved,
                     gr.update(),  # class_selector：維持原樣
@@ -452,12 +476,22 @@ def app():
                 model_ids,
                 image_size,
                 conf_threshold,
+                device_select,
                 input_type,
                 label_mode,
                 show_boxes,
                 show_masks,
                 show_polygons,
                 show_confidence,
+                mask_opt_enable,
+                mask_opt_steps,
+                morph_kernel,
+                blur_kernel,
+                blur_threshold,
+                min_component_area,
+                max_hole_area,
+                polygon_simplify,
+                simplify_eps_coeff,
                 saved_models_state,
                 class_selector,
                 class_choices_state,
@@ -470,6 +504,7 @@ def app():
                 v4,
                 v5,
                 last_results,
+                raw_results,
                 model_ids,
                 saved_models_state,
                 class_selector,
@@ -479,6 +514,23 @@ def app():
         )
 
         # ======== 即時重繪（只針對 Image 模式） ========
+        def add_mask_step(steps, method, count):
+            if steps is None:
+                rows = []
+            elif hasattr(steps, "tolist"):
+                rows = steps.tolist()
+            elif isinstance(steps, list):
+                rows = list(steps)
+            else:
+                rows = []
+            rows.append([method, int(count)])
+            return rows
+
+        mask_opt_add.click(
+            fn=add_mask_step,
+            inputs=[mask_opt_steps, mask_opt_method, mask_opt_count],
+            outputs=[mask_opt_steps],
+        )
         def replot_all_filtered(
             last_results_dict,
             label_mode_in,
@@ -486,6 +538,8 @@ def app():
             show_masks_in,
             show_polygons_in,
             show_conf_in,
+            simplify_mode_in,
+            simplify_eps_coeff_in,
             input_type_in,
             class_selected_items_in,
         ):
@@ -510,6 +564,8 @@ def app():
                     show_masks_in,
                     show_polygons_in,
                     show_conf_in,
+                    simplify_mode_in,
+                    simplify_eps_coeff_in,
                     allowed_ids,
                 )
                 gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
@@ -517,7 +573,15 @@ def app():
             return gallery
 
         # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪
-        for ctrl in (label_mode, show_boxes, show_masks, show_polygons, show_confidence):
+        for ctrl in (
+            label_mode,
+            show_boxes,
+            show_masks,
+            show_polygons,
+            show_confidence,
+            polygon_simplify,
+            simplify_eps_coeff,
+        ):
             ctrl.change(
                 fn=replot_all_filtered,
                 inputs=[
@@ -527,6 +591,8 @@ def app():
                     show_masks,
                     show_polygons,
                     show_confidence,
+                    polygon_simplify,
+                    simplify_eps_coeff,
                     input_type,
                     class_selector,
                 ],
@@ -543,11 +609,93 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
+                polygon_simplify,
+                simplify_eps_coeff,
                 input_type,
                 class_selector,
             ],
             outputs=[output_gallery],
         )
+
+        def update_mask_processing(
+            raw_results_dict,
+            mask_opt_enable_in,
+            mask_opt_steps_in,
+            morph_kernel_in,
+            blur_kernel_in,
+            blur_threshold_in,
+            min_component_area_in,
+            max_hole_area_in,
+            label_mode_in,
+            show_boxes_in,
+            show_masks_in,
+            show_polygons_in,
+            show_conf_in,
+            simplify_mode_in,
+            simplify_eps_coeff_in,
+            input_type_in,
+            class_selected_items_in,
+        ):
+            if not raw_results_dict:
+                return None, gr.update()
+
+            updated_results = apply_mask_optimizations(
+                raw_results_dict,
+                mask_opt_enable_in,
+                mask_opt_steps_in,
+                morph_kernel_in,
+                blur_kernel_in,
+                blur_threshold_in,
+                min_component_area_in,
+                max_hole_area_in,
+            )
+
+            gallery = replot_all_filtered(
+                updated_results,
+                label_mode_in,
+                show_boxes_in,
+                show_masks_in,
+                show_polygons_in,
+                show_conf_in,
+                simplify_mode_in,
+                simplify_eps_coeff_in,
+                input_type_in,
+                class_selected_items_in,
+            )
+            return updated_results, gallery
+
+        for ctrl in (
+            mask_opt_enable,
+            mask_opt_steps,
+            morph_kernel,
+            blur_kernel,
+            blur_threshold,
+            min_component_area,
+            max_hole_area,
+        ):
+            ctrl.change(
+                fn=update_mask_processing,
+                inputs=[
+                    raw_results,
+                    mask_opt_enable,
+                    mask_opt_steps,
+                    morph_kernel,
+                    blur_kernel,
+                    blur_threshold,
+                    min_component_area,
+                    max_hole_area,
+                    label_mode,
+                    show_boxes,
+                    show_masks,
+                    show_polygons,
+                    show_confidence,
+                    polygon_simplify,
+                    simplify_eps_coeff,
+                    input_type,
+                    class_selector,
+                ],
+                outputs=[last_results, output_gallery],
+            )
 
 
         # ======== 全選 / 取消全選 ========
@@ -560,6 +708,8 @@ def app():
             show_masks_in,
             show_polygons_in,
             show_conf_in,
+            simplify_mode_in,
+            simplify_eps_coeff_in,
             input_type_in,
         ):
             # 將值設為目前 choices（全選）
@@ -572,6 +722,8 @@ def app():
                 show_masks_in,
                 show_polygons_in,
                 show_conf_in,
+                simplify_mode_in,
+                simplify_eps_coeff_in,
                 input_type_in,
                 class_choices_in or [],
             )
@@ -587,6 +739,8 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
+                polygon_simplify,
+                simplify_eps_coeff,
                 input_type,
             ],
             outputs=[class_selector, output_gallery],
@@ -600,6 +754,8 @@ def app():
             show_masks_in,
             show_polygons_in,
             show_conf_in,
+            simplify_mode_in,
+            simplify_eps_coeff_in,
             input_type_in,
         ):
             update_component = gr.update(value=[])
@@ -610,6 +766,8 @@ def app():
                 show_masks_in,
                 show_polygons_in,
                 show_conf_in,
+                simplify_mode_in,
+                simplify_eps_coeff_in,
                 input_type_in,
                 [],
             )
@@ -624,6 +782,8 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
+                polygon_simplify,
+                simplify_eps_coeff,
                 input_type,
             ],
             outputs=[class_selector, output_gallery],
@@ -633,7 +793,13 @@ def app():
 
 
         # ======== 匯出 JSON ========
-        def export_json_click(last_results_dict, class_selected_items_in, image_meta):
+        def export_json_click(
+            last_results_dict,
+            class_selected_items_in,
+            image_meta,
+            simplify_mode_in,
+            simplify_eps_coeff_in,
+        ):
             # 僅支援影像模式（因影片逐幀 polygon 通常會很大）
             if not last_results_dict or not image_meta:
                 return []
@@ -651,12 +817,20 @@ def app():
                 image_info=image_meta,
                 out_dir=None,
                 allowed_class_ids=allowed_ids,
+                simplify_mode=simplify_mode_in,
+                simplify_eps_coeff=simplify_eps_coeff_in,
             )
             return files
 
         export_btn.click(
             fn=export_json_click,
-            inputs=[last_results, class_selector, image_meta_state],
+            inputs=[
+                last_results,
+                class_selector,
+                image_meta_state,
+                polygon_simplify,
+                simplify_eps_coeff,
+            ],
             outputs=[export_files],
         )
 

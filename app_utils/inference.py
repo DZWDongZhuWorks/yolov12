@@ -6,7 +6,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
+from ultralytics.utils import ops
 from ultralytics.utils.plotting import colors as ucolors
 from .polygon_utils import build_objects_from_result
 
@@ -103,6 +105,8 @@ def annotate_from_results(
     show_masks: bool,
     show_polygons: bool,
     show_confidence: bool,
+    simplify_mode: str,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]] = None,
 ):
     """
@@ -122,8 +126,8 @@ def annotate_from_results(
     objects = build_objects_from_result(
         result,
         allowed_class_ids=allowed_class_ids,
-        simplify_mode="rdp",    # 跟 export_utils 用同一個 mode
-        simplify_eps_ratio=0.01,
+        simplify_mode=simplify_mode,
+        simplify_eps_coeff=simplify_eps_coeff,
     )
     
     # ---- 先畫 polygon 邊界（如果有 mask） ----
@@ -136,6 +140,8 @@ def annotate_from_results(
             for seg in polys:
                 pts = np.asarray(seg, dtype=np.int32).reshape(-1, 1, 2)
                 cv2.polylines(base, [pts], isClosed=True, color=color, thickness=2)
+                for x, y in np.asarray(seg, dtype=np.int32):
+                    cv2.circle(base, (int(x), int(y)), radius=3, color=(255, 255, 255), thickness=1)
     # ---- 再畫 label ----
     if label_mode == "隱藏":
         return base
@@ -173,18 +179,394 @@ def annotate_from_results(
         y_top = max(0, y1 - th - 2 * pad)
 
         cv2.rectangle(base, (x1, y_top), (x1 + tw + 2 * pad, y1), c_bgr, -1)
+
+        # --- 根據背景亮度自動選字色 ---
+        b, g, r = c_bgr
+        luminance = 0.299*r + 0.587*g + 0.114*b
+        text_color = (0, 0, 0) if luminance > 160 else (255, 255, 255)
         cv2.putText(
             base,
             base_text,
             (x1 + pad, y1 - pad),
             font,
             font_scale,
-            (255, 255, 255),
+            text_color,
             thickness,
             cv2.LINE_AA,
         )
 
     return base
+
+
+def split_connection_contours(result):
+    """
+    將單一 result 的 masks 拆成連通元件，並以拆分後的 contour 取代原本結果。
+    若 mask 沒有多段，則維持原樣。
+    """
+    if not hasattr(result, "masks") or result.masks is None:
+        return result
+    if not hasattr(result, "boxes") or result.boxes is None:
+        return result
+
+    masks = result.masks.data
+    if masks is None or len(masks) == 0:
+        return result
+
+    boxes_data = result.boxes.data
+    if boxes_data is None or len(boxes_data) == 0:
+        return result
+
+    orig_shape = result.orig_shape
+    mask_shape = masks.shape[1:]
+    new_masks: List[np.ndarray] = []
+    new_boxes: List[List[float]] = []
+    had_split = False
+
+    boxes_np = boxes_data.detach().cpu().numpy()
+    is_track = result.boxes.is_track
+
+    for i, mask_tensor in enumerate(masks):
+        mask_np = mask_tensor.detach().cpu().numpy()
+        binary = (mask_np > 0.5).astype(np.uint8)
+        contours = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+
+        if len(contours) <= 1:
+            new_masks.append(mask_np)
+            new_boxes.append(boxes_np[i].tolist())
+            continue
+
+        had_split = True
+        for contour in contours:
+            if contour.shape[0] < 3:
+                continue
+            component = np.zeros_like(binary)
+            cv2.drawContours(component, [contour], -1, 1, thickness=-1)
+            new_masks.append(component.astype(mask_np.dtype))
+
+            coords = contour.reshape(-1, 2).astype(np.float32)
+            coords = ops.scale_coords(mask_shape, coords, orig_shape, normalize=False)
+            x_min, y_min = coords.min(axis=0)
+            x_max, y_max = coords.max(axis=0)
+
+            if is_track:
+                track_id = float(boxes_np[i][4])
+                conf = float(boxes_np[i][5])
+                cls = float(boxes_np[i][6])
+                new_boxes.append([x_min, y_min, x_max, y_max, track_id, conf, cls])
+            else:
+                conf = float(boxes_np[i][4])
+                cls = float(boxes_np[i][5])
+                new_boxes.append([x_min, y_min, x_max, y_max, conf, cls])
+
+    if not new_boxes:
+        return result
+
+    if not had_split:
+        return result
+
+    new_boxes_tensor = torch.tensor(new_boxes, device=boxes_data.device, dtype=boxes_data.dtype)
+    new_masks_tensor = torch.tensor(np.stack(new_masks, axis=0), device=masks.device, dtype=masks.dtype)
+
+    updated = result.new()
+    updated.update(boxes=new_boxes_tensor, masks=new_masks_tensor)
+    updated.names = result.names
+    updated.path = result.path
+    return updated
+
+
+def parse_mask_steps(steps_input) -> List[Tuple[str, int]]:
+    if steps_input is None:
+        return []
+    
+    # Check for empty state safely (handles pandas DataFrames)
+    if hasattr(steps_input, "empty"):
+        if steps_input.empty:
+            return []
+    elif not steps_input:
+        return []
+
+    steps: List[Tuple[str, int]] = []
+    if isinstance(steps_input, str):
+        raw_parts = []
+        for part in steps_input.replace("\n", ",").split(","):
+            cleaned = part.strip()
+            if cleaned:
+                raw_parts.append(cleaned)
+        for item in raw_parts:
+            if ":" in item:
+                name, count_text = item.split(":", 1)
+            else:
+                name, count_text = item, "1"
+            name = name.strip().lower()
+            try:
+                count = int(count_text.strip())
+            except Exception:
+                count = 1
+            if count <= 0:
+                continue
+            if name == "contour_split":
+                name = "split"
+            if name not in {
+                "erode",
+                "dilate",
+                "blur",
+                "remove_small",
+                "fill_holes",
+                "split",
+            }:
+                continue
+            steps.append((name, count))
+    else:
+        # Handle DataFrame or list of lists
+        iterable = steps_input
+        if hasattr(steps_input, "values") and hasattr(steps_input, "tolist"):
+            try:
+                iterable = steps_input.values.tolist()
+            except Exception:
+                pass
+
+        try:
+            for row in iterable:
+                if not row or len(row) < 1:
+                    continue
+                name = str(row[0]).strip().lower()
+                count = 1
+                if len(row) > 1 and row[1] not in (None, ""):
+                    try:
+                        count = int(row[1])
+                    except Exception:
+                        count = 1
+                if count <= 0:
+                    continue
+                if name == "contour_split":
+                    name = "split"
+                if name not in {
+                    "erode",
+                    "dilate",
+                    "blur",
+                    "remove_small",
+                    "fill_holes",
+                    "split",
+                }:
+                    continue
+                steps.append((name, count))
+        except Exception:
+            return []
+    return steps
+
+
+def _ensure_odd(value: int) -> int:
+    if value <= 1:
+        return 1
+    return value if value % 2 == 1 else value + 1
+
+
+def _split_components(binary: np.ndarray) -> List[np.ndarray]:
+    contours = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+    if len(contours) <= 1:
+        return [binary]
+    components: List[np.ndarray] = []
+    for contour in contours:
+        if contour.shape[0] < 3:
+            continue
+        component = np.zeros_like(binary)
+        cv2.drawContours(component, [contour], -1, 1, thickness=-1)
+        if component.sum() > 0:
+            components.append(component)
+    return components or [binary]
+
+
+def _remove_small_components(binary: np.ndarray, min_area: int) -> np.ndarray:
+    if min_area <= 0:
+        return binary
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if num_labels <= 1:
+        return binary
+    output = np.zeros_like(binary)
+    for label in range(1, num_labels):
+        area = stats[label, cv2.CC_STAT_AREA]
+        if area >= min_area:
+            output[labels == label] = 1
+    return output
+
+
+def _fill_small_holes(binary: np.ndarray, max_hole_area: int) -> np.ndarray:
+    if max_hole_area <= 0:
+        return binary
+    h, w = binary.shape[:2]
+    inverted = (1 - binary).astype(np.uint8)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(inverted, connectivity=8)
+    if num_labels <= 1:
+        return binary
+    output = binary.copy()
+    for label in range(1, num_labels):
+        x, y, width, height, area = stats[label]
+        touches_border = x == 0 or y == 0 or (x + width) == w or (y + height) == h
+        if touches_border:
+            continue
+        if area <= max_hole_area:
+            output[labels == label] = 1
+    return output
+
+
+def apply_mask_optimizations_to_result(
+    result,
+    enabled: bool,
+    steps_text: Optional[str],
+    morph_kernel: int,
+    blur_kernel: int,
+    blur_threshold: float,
+    min_component_area: int,
+    max_hole_area: int,
+):
+    steps = parse_mask_steps(steps_text)
+    if not enabled or not steps:
+        return result
+    if not hasattr(result, "masks") or result.masks is None:
+        return result
+    if not hasattr(result, "boxes") or result.boxes is None:
+        return result
+
+    masks = result.masks.data
+    boxes_data = result.boxes.data
+    if masks is None or len(masks) == 0 or boxes_data is None or len(boxes_data) == 0:
+        return result
+
+    orig_shape = result.orig_shape
+    mask_shape = masks.shape[1:]
+    new_masks: List[np.ndarray] = []
+    new_boxes: List[List[float]] = []
+
+    boxes_np = boxes_data.detach().cpu().numpy()
+    is_track = result.boxes.is_track
+
+    for i, mask_tensor in enumerate(masks):
+        mask_np = mask_tensor.detach().cpu().numpy()
+        binaries = [(mask_np > 0.5).astype(np.uint8)]
+        kernel_size = _ensure_odd(morph_kernel)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        blur_size = _ensure_odd(blur_kernel)
+
+        for step_name, count in steps:
+            if not binaries:
+                break
+            if step_name == "erode":
+                for _ in range(count):
+                    binaries = [cv2.erode(b, kernel, iterations=1) for b in binaries]
+            elif step_name == "dilate":
+                for _ in range(count):
+                    binaries = [cv2.dilate(b, kernel, iterations=1) for b in binaries]
+            elif step_name == "blur":
+                for _ in range(count):
+                    blurred = [
+                        cv2.GaussianBlur(b.astype(np.float32), (blur_size, blur_size), 0)
+                        for b in binaries
+                    ]
+                    binaries = [(b >= blur_threshold).astype(np.uint8) for b in blurred]
+            elif step_name == "remove_small":
+                for _ in range(count):
+                    binaries = [_remove_small_components(b, min_component_area) for b in binaries]
+            elif step_name == "fill_holes":
+                for _ in range(count):
+                    binaries = [_fill_small_holes(b, max_hole_area) for b in binaries]
+            elif step_name == "split":
+                for _ in range(count):
+                    split_bins: List[np.ndarray] = []
+                    for b in binaries:
+                        split_bins.extend(_split_components(b))
+                    binaries = split_bins
+
+        for optimized in binaries:
+            if optimized.sum() == 0:
+                continue
+
+            ys, xs = np.where(optimized > 0)
+            if len(xs) == 0 or len(ys) == 0:
+                continue
+            x_min, x_max = xs.min(), xs.max()
+            y_min, y_max = ys.min(), ys.max()
+
+            coords = np.array([[x_min, y_min], [x_max, y_max]], dtype=np.float32)
+            coords = ops.scale_coords(mask_shape, coords, orig_shape, normalize=False)
+            x_min, y_min = coords[0]
+            x_max, y_max = coords[1]
+
+            if is_track:
+                track_id = float(boxes_np[i][4])
+                conf = float(boxes_np[i][5])
+                cls = float(boxes_np[i][6])
+                new_boxes.append([x_min, y_min, x_max, y_max, track_id, conf, cls])
+            else:
+                conf = float(boxes_np[i][4])
+                cls = float(boxes_np[i][5])
+                new_boxes.append([x_min, y_min, x_max, y_max, conf, cls])
+
+            new_masks.append(optimized.astype(mask_np.dtype))
+
+    if not new_boxes:
+        return result
+
+    new_boxes_tensor = torch.tensor(new_boxes, device=boxes_data.device, dtype=boxes_data.dtype)
+    new_masks_tensor = torch.tensor(np.stack(new_masks, axis=0), device=masks.device, dtype=masks.dtype)
+
+    updated = result.new()
+    updated.update(boxes=new_boxes_tensor, masks=new_masks_tensor)
+    updated.names = result.names
+    updated.path = result.path
+    return updated
+
+
+def apply_mask_optimizations(
+    results_cache: Dict[str, Any],
+    enabled: bool,
+    steps_text: Optional[str],
+    morph_kernel: int,
+    blur_kernel: int,
+    blur_threshold: float,
+    min_component_area: int,
+    max_hole_area: int,
+) -> Dict[str, Any]:
+    steps = parse_mask_steps(steps_text)
+    if not results_cache or not enabled or not steps:
+        return results_cache
+
+    updated_cache: Dict[str, Any] = {}
+    for mid, results in results_cache.items():
+        if not results:
+            updated_cache[mid] = results
+            continue
+        updated_cache[mid] = [
+            apply_mask_optimizations_to_result(
+                res,
+                enabled,
+                steps_text,
+                morph_kernel,
+                blur_kernel,
+                blur_threshold,
+                min_component_area,
+                max_hole_area,
+            )
+            for res in results
+        ]
+
+    return updated_cache
+
+
+def apply_connection_contour_split(results_cache: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    對 results_cache 內的結果做連通元件拆分，維持結果型態供後續流程使用。
+    """
+    if not results_cache:
+        return results_cache
+
+    updated_cache: Dict[str, Any] = {}
+    for mid, results in results_cache.items():
+        if not results:
+            updated_cache[mid] = results
+            continue
+        updated_cache[mid] = [split_connection_contours(res) for res in results]
+
+    return updated_cache
 
 
 # -----------------------------
@@ -195,15 +577,21 @@ def infer_image_single(
     image,
     image_size: int,
     conf_threshold: float,
+    device: Optional[str],
     label_mode: str,
     show_boxes: bool,
     show_masks: bool,
     show_polygons: bool,
     show_confidence: bool,
+    simplify_mode: str,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
-    results = model.predict(source=image, imgsz=image_size, conf=conf_threshold)
+    predict_kwargs = {"source": image, "imgsz": image_size, "conf": conf_threshold}
+    if device:
+        predict_kwargs["device"] = device
+    results = model.predict(**predict_kwargs)
     annotated_bgr = annotate_from_results(
         results[0],
         label_mode,
@@ -211,6 +599,8 @@ def infer_image_single(
         show_masks,
         show_polygons,
         show_confidence,
+        simplify_mode,
+        simplify_eps_coeff,
         allowed_class_ids,
     )
     # Gradio Image 用 RGB
@@ -222,12 +612,22 @@ def infer_video_single(
     video_path: str,
     image_size: int,
     conf_threshold: float,
+    device: Optional[str],
     label_mode: str,
     show_boxes: bool,
     show_masks: bool,
     show_polygons: bool,
     show_confidence: bool,
+    simplify_mode: str,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
+    mask_opt_enabled: bool,
+    mask_opt_steps: Optional[str],
+    morph_kernel: int,
+    blur_kernel: int,
+    blur_threshold: float,
+    min_component_area: int,
+    max_hole_area: int,
 ):
     model = YOLO(model_id)
 
@@ -243,12 +643,27 @@ def infer_video_single(
         fps,
         (frame_width, frame_height),
     )
+    mask_steps = parse_mask_steps(mask_opt_steps)
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-        results = model.predict(source=frame, imgsz=image_size, conf=conf_threshold)
+        predict_kwargs = {"source": frame, "imgsz": image_size, "conf": conf_threshold}
+        if device:
+            predict_kwargs["device"] = device
+        results = model.predict(**predict_kwargs)
+        if mask_opt_enabled and mask_steps:
+            results[0] = apply_mask_optimizations_to_result(
+                results[0],
+                mask_opt_enabled,
+                mask_opt_steps,
+                morph_kernel,
+                blur_kernel,
+                blur_threshold,
+                min_component_area,
+                max_hole_area,
+            )
         annotated_bgr = annotate_from_results(
             results[0],
             label_mode,
@@ -256,6 +671,8 @@ def infer_video_single(
             show_masks,
             show_polygons,
             show_confidence,
+            simplify_mode,
+            simplify_eps_coeff,
             allowed_class_ids,
         )
         out.write(annotated_bgr)
@@ -270,11 +687,14 @@ def yolov12_multi_inference_image(
     model_ids: List[str],
     image_size: int,
     conf_threshold: float,
+    device: Optional[str],
     label_mode: str,
     show_boxes: bool,
     show_masks: bool,
     show_polygons: bool,
     show_confidence: bool,
+    simplify_mode: str,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
 ):
     """
@@ -292,11 +712,14 @@ def yolov12_multi_inference_image(
             image,
             image_size,
             conf_threshold,
+            device,
             label_mode,
             show_boxes,
             show_masks,
             show_polygons,
             show_confidence,
+            simplify_mode,
+            simplify_eps_coeff,
             allowed_class_ids,
         )
         gallery_items.append((img_rgb, mid))
@@ -310,12 +733,22 @@ def yolov12_multi_inference_video(
     model_ids: List[str],
     image_size: int,
     conf_threshold: float,
+    device: Optional[str],
     label_mode: str,
     show_boxes: bool,
     show_masks: bool,
     show_polygons: bool,
     show_confidence: bool,
+    simplify_mode: str,
+    simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
+    mask_opt_enabled: bool,
+    mask_opt_steps: Optional[str],
+    morph_kernel: int,
+    blur_kernel: int,
+    blur_threshold: float,
+    min_component_area: int,
+    max_hole_area: int,
 ):
     """
     同一支影片對多個模型推論。
@@ -334,12 +767,22 @@ def yolov12_multi_inference_video(
             src_path,
             image_size,
             conf_threshold,
+            device,
             label_mode,
             show_boxes,
             show_masks,
             show_polygons,
             show_confidence,
+            simplify_mode,
+            simplify_eps_coeff,
             allowed_class_ids,
+            mask_opt_enabled,
+            mask_opt_steps,
+            morph_kernel,
+            blur_kernel,
+            blur_threshold,
+            min_component_area,
+            max_hole_area,
         )
         outs.append((mid, out_path))
 
@@ -372,11 +815,14 @@ def yolov12_inference_for_examples(
         model_ids,
         image_size,
         conf_threshold,
+        None,
         label_mode,
         show_boxes,
         show_masks,
         True,   # show_polygons
         True,   # show_confidence
+        "rdp",
+        1.0,
         allowed_class_ids=None,
     )
     return gallery

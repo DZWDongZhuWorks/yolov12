@@ -243,7 +243,7 @@ def main():
         )
     )
     parser.add_argument(
-        "-i", "--input",
+        "-j", "--json",
         required=True,
         help="輸入 polygon JSON 路徑",
     )
@@ -284,7 +284,7 @@ def main():
 
     args = parser.parse_args()
 
-    data = load_json(args.input)
+    data = load_json(args.json)
     simplified = simplify_json_polygons(
         data,
         min_aspect=args.min_aspect,
@@ -294,7 +294,7 @@ def main():
     save_json(simplified, args.output)
 
     print(
-        f"已將 {args.input} 的 polygons 簡化，"
+        f"已將 {args.json} 的 polygons 簡化，"
         f"輸出到 {args.output}（export_line={args.export_line}，"
         f"classes={args.classes}）"
     )
