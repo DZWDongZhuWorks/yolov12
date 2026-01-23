@@ -9,7 +9,7 @@ from app_utils.inference import (
     names_to_choice_list,
     parse_selected_to_ids,
     annotate_from_results,
-    apply_connection_contour_split,
+    apply_mask_optimizations,
     yolov12_multi_inference_image,
     yolov12_multi_inference_video,
     yolov12_inference_for_examples,
@@ -76,18 +76,67 @@ def app():
                 show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
                 show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")  # ★ 新增
                 show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
-                contour_split = gr.Checkbox(value=False, label="Connection Contour Split")
+                gr.Markdown("### Mask 優化（先處理 mask 再生成 polygon）")
+                mask_opt_enable = gr.Checkbox(value=False, label="啟用 Mask 優化")
+                mask_opt_pipeline = gr.Textbox(
+                    label="Mask Optimization Pipeline",
+                    value="erode:1,dilate:1,blur:1,remove_small:1,fill_holes:1,contour_split:1",
+                    lines=2,
+                    placeholder="例: erode:1,dilate:2,blur:1,remove_small:1,fill_holes:1,contour_split:1",
+                )
+                morph_kernel = gr.Slider(
+                    label="Morph Kernel Size (odd)",
+                    minimum=1,
+                    maximum=15,
+                    step=2,
+                    value=3,
+                )
+                morph_iterations = gr.Slider(
+                    label="Morph Iterations (per step)",
+                    minimum=1,
+                    maximum=5,
+                    step=1,
+                    value=1,
+                )
+                blur_kernel = gr.Slider(
+                    label="Blur Kernel Size (odd)",
+                    minimum=1,
+                    maximum=15,
+                    step=2,
+                    value=3,
+                )
+                blur_threshold = gr.Slider(
+                    label="Blur Threshold",
+                    minimum=0.1,
+                    maximum=0.9,
+                    step=0.05,
+                    value=0.5,
+                )
+                min_component_area = gr.Slider(
+                    label="Min Component Area",
+                    minimum=0,
+                    maximum=5000,
+                    step=10,
+                    value=0,
+                )
+                max_hole_area = gr.Slider(
+                    label="Max Hole Area",
+                    minimum=0,
+                    maximum=5000,
+                    step=10,
+                    value=0,
+                )
                 polygon_simplify = gr.Radio(
                     choices=["none", "convex_hull", "rdp"],
                     value="rdp",
                     label="Polygon Simplify Mode",
                 )
-                simplify_eps_ratio = gr.Slider(
-                    label="Polygon Simplify Epsilon Ratio",
-                    minimum=0.0,
-                    maximum=0.1,
-                    step=0.001,
-                    value=0.01,
+                simplify_eps_coeff = gr.Slider(
+                    label="Polygon Simplify Epsilon Coefficient (Base ratio 0.01)",
+                    minimum=0.1,
+                    maximum=5.0,
+                    step=0.1,
+                    value=1.0,
                 )
 
                 yolov12_infer = gr.Button(value="Detect Objects (Run)")
@@ -169,9 +218,16 @@ def app():
             show_masks_in,
             show_polygons_in, 
             show_conf_in,
-            contour_split_in,
+            mask_opt_enable_in,
+            mask_opt_pipeline_in,
+            morph_kernel_in,
+            morph_iterations_in,
+            blur_kernel_in,
+            blur_threshold_in,
+            min_component_area_in,
+            max_hole_area_in,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
             saved_models_in,
             class_selected_items_in,
             class_choices_in,
@@ -238,13 +294,22 @@ def app():
                     show_polygons_in, 
                     show_conf_in,
                     simplify_mode_in,
-                    simplify_eps_ratio_in,
+                    simplify_eps_coeff_in,
                     allowed_class_ids=allowed_ids,
                 )
 
                 raw_results_cache = results_cache
-                if contour_split_in:
-                    results_cache = apply_connection_contour_split(results_cache)
+                results_cache = apply_mask_optimizations(
+                    results_cache,
+                    mask_opt_enable_in,
+                    mask_opt_pipeline_in,
+                    morph_kernel_in,
+                    morph_iterations_in,
+                    blur_kernel_in,
+                    blur_threshold_in,
+                    min_component_area_in,
+                    max_hole_area_in,
+                )
 
                 # 4-2) 從第一個結果建立類別選單
                 try:
@@ -352,8 +417,16 @@ def app():
                     show_polygons_in, 
                     show_conf_in,
                     simplify_mode_in,
-                    simplify_eps_ratio_in,
+                    simplify_eps_coeff_in,
                     allowed_class_ids=allowed_ids,
+                    mask_opt_enable=mask_opt_enable_in,
+                    mask_opt_pipeline=mask_opt_pipeline_in,
+                    morph_kernel=morph_kernel_in,
+                    morph_iterations=morph_iterations_in,
+                    blur_kernel=blur_kernel_in,
+                    blur_threshold=blur_threshold_in,
+                    min_component_area=min_component_area_in,
+                    max_hole_area=max_hole_area_in,
                 )
 
                 video_updates = [gr.update(value=None)] * 5
@@ -391,9 +464,16 @@ def app():
                 show_masks,
                 show_polygons,
                 show_confidence,
-                contour_split,
+                mask_opt_enable,
+                mask_opt_pipeline,
+                morph_kernel,
+                morph_iterations,
+                blur_kernel,
+                blur_threshold,
+                min_component_area,
+                max_hole_area,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
                 saved_models_state,
                 class_selector,
                 class_choices_state,
@@ -424,7 +504,7 @@ def app():
             show_polygons_in,
             show_conf_in,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
             input_type_in,
             class_selected_items_in,
         ):
@@ -450,7 +530,7 @@ def app():
                     show_polygons_in,
                     show_conf_in,
                     simplify_mode_in,
-                    simplify_eps_ratio_in,
+                    simplify_eps_coeff_in,
                     allowed_ids,
                 )
                 gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
@@ -465,7 +545,7 @@ def app():
             show_polygons,
             show_confidence,
             polygon_simplify,
-            simplify_eps_ratio,
+            simplify_eps_coeff,
         ):
             ctrl.change(
                 fn=replot_all_filtered,
@@ -477,7 +557,7 @@ def app():
                     show_polygons,
                     show_confidence,
                     polygon_simplify,
-                    simplify_eps_ratio,
+                    simplify_eps_coeff,
                     input_type,
                     class_selector,
                 ],
@@ -495,33 +575,47 @@ def app():
                 show_polygons,
                 show_confidence,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
                 input_type,
                 class_selector,
             ],
             outputs=[output_gallery],
         )
 
-        def toggle_contour_split(
+        def update_mask_processing(
             raw_results_dict,
-            contour_split_in,
+            mask_opt_enable_in,
+            mask_opt_pipeline_in,
+            morph_kernel_in,
+            morph_iterations_in,
+            blur_kernel_in,
+            blur_threshold_in,
+            min_component_area_in,
+            max_hole_area_in,
             label_mode_in,
             show_boxes_in,
             show_masks_in,
             show_polygons_in,
             show_conf_in,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
             input_type_in,
             class_selected_items_in,
         ):
             if not raw_results_dict:
                 return None, gr.update()
 
-            if contour_split_in:
-                updated_results = apply_connection_contour_split(raw_results_dict)
-            else:
-                updated_results = raw_results_dict
+            updated_results = apply_mask_optimizations(
+                raw_results_dict,
+                mask_opt_enable_in,
+                mask_opt_pipeline_in,
+                morph_kernel_in,
+                morph_iterations_in,
+                blur_kernel_in,
+                blur_threshold_in,
+                min_component_area_in,
+                max_hole_area_in,
+            )
 
             gallery = replot_all_filtered(
                 updated_results,
@@ -531,29 +625,46 @@ def app():
                 show_polygons_in,
                 show_conf_in,
                 simplify_mode_in,
-                simplify_eps_ratio_in,
+                simplify_eps_coeff_in,
                 input_type_in,
                 class_selected_items_in,
             )
             return updated_results, gallery
 
-        contour_split.change(
-            fn=toggle_contour_split,
-            inputs=[
-                raw_results,
-                contour_split,
-                label_mode,
-                show_boxes,
-                show_masks,
-                show_polygons,
-                show_confidence,
-                polygon_simplify,
-                simplify_eps_ratio,
-                input_type,
-                class_selector,
-            ],
-            outputs=[last_results, output_gallery],
-        )
+        for ctrl in (
+            mask_opt_enable,
+            mask_opt_pipeline,
+            morph_kernel,
+            morph_iterations,
+            blur_kernel,
+            blur_threshold,
+            min_component_area,
+            max_hole_area,
+        ):
+            ctrl.change(
+                fn=update_mask_processing,
+                inputs=[
+                    raw_results,
+                    mask_opt_enable,
+                    mask_opt_pipeline,
+                    morph_kernel,
+                    morph_iterations,
+                    blur_kernel,
+                    blur_threshold,
+                    min_component_area,
+                    max_hole_area,
+                    label_mode,
+                    show_boxes,
+                    show_masks,
+                    show_polygons,
+                    show_confidence,
+                    polygon_simplify,
+                    simplify_eps_coeff,
+                    input_type,
+                    class_selector,
+                ],
+                outputs=[last_results, output_gallery],
+            )
 
 
         # ======== 全選 / 取消全選 ========
@@ -567,7 +678,7 @@ def app():
             show_polygons_in,
             show_conf_in,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
             input_type_in,
         ):
             # 將值設為目前 choices（全選）
@@ -581,7 +692,7 @@ def app():
                 show_polygons_in,
                 show_conf_in,
                 simplify_mode_in,
-                simplify_eps_ratio_in,
+                simplify_eps_coeff_in,
                 input_type_in,
                 class_choices_in or [],
             )
@@ -598,7 +709,7 @@ def app():
                 show_polygons,
                 show_confidence,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
                 input_type,
             ],
             outputs=[class_selector, output_gallery],
@@ -613,7 +724,7 @@ def app():
             show_polygons_in,
             show_conf_in,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
             input_type_in,
         ):
             update_component = gr.update(value=[])
@@ -625,7 +736,7 @@ def app():
                 show_polygons_in,
                 show_conf_in,
                 simplify_mode_in,
-                simplify_eps_ratio_in,
+                simplify_eps_coeff_in,
                 input_type_in,
                 [],
             )
@@ -641,7 +752,7 @@ def app():
                 show_polygons,
                 show_confidence,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
                 input_type,
             ],
             outputs=[class_selector, output_gallery],
@@ -656,7 +767,7 @@ def app():
             class_selected_items_in,
             image_meta,
             simplify_mode_in,
-            simplify_eps_ratio_in,
+            simplify_eps_coeff_in,
         ):
             # 僅支援影像模式（因影片逐幀 polygon 通常會很大）
             if not last_results_dict or not image_meta:
@@ -676,7 +787,7 @@ def app():
                 out_dir=None,
                 allowed_class_ids=allowed_ids,
                 simplify_mode=simplify_mode_in,
-                simplify_eps_ratio=simplify_eps_ratio_in,
+                simplify_eps_coeff=simplify_eps_coeff_in,
             )
             return files
 
@@ -687,7 +798,7 @@ def app():
                 class_selector,
                 image_meta_state,
                 polygon_simplify,
-                simplify_eps_ratio,
+                simplify_eps_coeff,
             ],
             outputs=[export_files],
         )
