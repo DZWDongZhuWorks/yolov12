@@ -139,9 +139,10 @@ def app():
                         step=10,
                         value=0,
                     )
-                    step_class_filter = gr.Textbox(
-                        label="套用 Classes (逗號分隔，留空=全部)",
-                        placeholder="0,1 或 person,car",
+                    step_class_filter = gr.CheckboxGroup(
+                        label="套用 Classes（不選=全部）",
+                        choices=[],
+                        value=[],
                     )
                 gr.Markdown(
                     "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
@@ -293,6 +294,7 @@ def app():
                     gr.update(),  # class_selector
                     class_choices_in or [],  # class_choices_state
                     None,  # image_meta_state
+                    gr.update(choices=class_choices_in or [], value=[]),  # step_class_filter
                 )
 
             # 2) 持久化自訂模型選項
@@ -321,6 +323,7 @@ def app():
                         gr.update(),  # class_selector
                         class_choices_in or [],
                         None,
+                        gr.update(choices=class_choices_in or [], value=[]),
                     )
 
                 # 4-1) 多模型推論
@@ -374,6 +377,10 @@ def app():
                     choices=class_choices_new,
                     value=class_selected_items_out,
                 )
+                step_class_filter_update = gr.update(
+                    choices=class_choices_new,
+                    value=[],
+                )
 
                 # 4-3) 構建 image meta（檔名、寬高）
                 width = height = 0
@@ -425,6 +432,7 @@ def app():
                     class_selector_update,
                     class_choices_new,
                     image_meta,  # image_meta_state
+                    step_class_filter_update,
                 )
 
             # 5) Video 模式
@@ -440,6 +448,7 @@ def app():
                         gr.update(),  # class_selector
                         class_choices_in or [],
                         None,
+                        gr.update(choices=class_choices_in or [], value=[]),
                     )
 
                 outs = yolov12_multi_inference_video(
@@ -479,6 +488,7 @@ def app():
                     gr.update(),  # class_selector：維持原樣
                     class_choices_in or [],
                     None,  # image_meta_state（影片無需）
+                    gr.update(choices=class_choices_in or [], value=[]),
                 )
 
         yolov12_infer.click(
@@ -519,6 +529,7 @@ def app():
                 class_selector,
                 class_choices_state,
                 image_meta_state,
+                step_class_filter,
             ],
         )
 

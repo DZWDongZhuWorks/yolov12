@@ -318,10 +318,18 @@ def _normalize_class_filter(raw_value) -> Optional[List[object]]:
         if isinstance(token, (int, np.integer)):
             normalized.append(int(token))
             continue
+        token_str = str(token).strip()
+        if ":" in token_str:
+            prefix = token_str.split(":", 1)[0].strip()
+            try:
+                normalized.append(int(prefix))
+                continue
+            except Exception:
+                token_str = token_str
         try:
-            normalized.append(int(str(token)))
+            normalized.append(int(token_str))
         except Exception:
-            normalized.append(str(token))
+            normalized.append(token_str)
     return normalized or None
 
 
