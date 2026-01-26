@@ -139,6 +139,11 @@ def app():
                         step=10,
                         value=0,
                     )
+                step_class_filter_query = gr.Textbox(
+                    label="類別查詢",
+                    placeholder="輸入關鍵字或 class id",
+                )
+                with gr.Accordion("套用 Classes（不選=全部）", open=False):
                     step_class_filter = gr.CheckboxGroup(
                         label="套用 Classes（不選=全部）",
                         choices=[],
@@ -198,7 +203,11 @@ def app():
 
                 # 類別篩選
                 gr.Markdown("### 類別篩選（預設全選）")
-                with gr.Row():
+                class_filter_query = gr.Textbox(
+                    label="類別查詢",
+                    placeholder="輸入關鍵字或 class id",
+                )
+                with gr.Accordion("類別（ID: 名稱）", open=False):
                     class_selector = gr.CheckboxGroup(
                         label="類別（ID: 名稱）",
                         choices=[],
@@ -295,6 +304,8 @@ def app():
                     class_choices_in or [],  # class_choices_state
                     None,  # image_meta_state
                     gr.update(choices=class_choices_in or [], value=[]),  # step_class_filter
+                    gr.update(value=""),
+                    gr.update(value=""),
                 )
 
             # 2) 持久化自訂模型選項
@@ -324,6 +335,8 @@ def app():
                         class_choices_in or [],
                         None,
                         gr.update(choices=class_choices_in or [], value=[]),
+                        gr.update(value=""),
+                        gr.update(value=""),
                     )
 
                 # 4-1) 多模型推論
@@ -381,6 +394,8 @@ def app():
                     choices=class_choices_new,
                     value=[],
                 )
+                class_filter_query_update = gr.update(value="")
+                step_filter_query_update = gr.update(value="")
 
                 # 4-3) 構建 image meta（檔名、寬高）
                 width = height = 0
@@ -433,6 +448,8 @@ def app():
                     class_choices_new,
                     image_meta,  # image_meta_state
                     step_class_filter_update,
+                    class_filter_query_update,
+                    step_filter_query_update,
                 )
 
             # 5) Video 模式
@@ -449,6 +466,8 @@ def app():
                         class_choices_in or [],
                         None,
                         gr.update(choices=class_choices_in or [], value=[]),
+                        gr.update(value=""),
+                        gr.update(value=""),
                     )
 
                 outs = yolov12_multi_inference_video(
@@ -489,6 +508,8 @@ def app():
                     class_choices_in or [],
                     None,  # image_meta_state（影片無需）
                     gr.update(choices=class_choices_in or [], value=[]),
+                    gr.update(value=""),
+                    gr.update(value=""),
                 )
 
         yolov12_infer.click(
@@ -530,10 +551,34 @@ def app():
                 class_choices_state,
                 image_meta_state,
                 step_class_filter,
+                class_filter_query,
+                step_class_filter_query,
             ],
         )
 
         # ======== 即時重繪（只針對 Image 模式） ========
+        def _filter_class_choices(query_text: str, choices: List[str]) -> List[str]:
+            if not choices:
+                return []
+            query = (query_text or "").strip().lower()
+            if not query:
+                return choices
+            filtered: List[str] = []
+            for choice in choices:
+                choice_text = str(choice).lower()
+                if query in choice_text:
+                    filtered.append(choice)
+            return filtered
+
+        def update_class_selector_filter(query_text, choices, selected):
+            filtered = _filter_class_choices(query_text, choices)
+            selected_set = set(selected or [])
+            return gr.update(choices=filtered, value=[c for c in filtered if c in selected_set])
+
+        def update_step_class_filter(query_text, choices, selected):
+            filtered = _filter_class_choices(query_text, choices)
+            selected_set = set(selected or [])
+            return gr.update(choices=filtered, value=[c for c in filtered if c in selected_set])
         def add_mask_step(
             steps,
             method,
@@ -581,6 +626,16 @@ def app():
                 step_class_filter,
             ],
             outputs=[mask_opt_steps],
+        )
+        class_filter_query.change(
+            fn=update_class_selector_filter,
+            inputs=[class_filter_query, class_choices_state, class_selector],
+            outputs=[class_selector],
+        )
+        step_class_filter_query.change(
+            fn=update_step_class_filter,
+            inputs=[step_class_filter_query, class_choices_state, step_class_filter],
+            outputs=[step_class_filter],
         )
         def replot_all_filtered(
             last_results_dict,
@@ -754,6 +809,7 @@ def app():
         ):
             # 將值設為目前 choices（全選）
             update_component = gr.update(value=class_choices_in or [])
+            class_filter_query_update = gr.update(value="")
             # 重繪
             gallery = replot_all_filtered(
                 last_results_dict,
@@ -768,7 +824,7 @@ def app():
                 input_type_in,
                 class_choices_in or [],
             )
-            return update_component, gallery
+            return update_component, class_filter_query_update, gallery
 
         select_all_btn.click(
             fn=select_all_and_replot,
@@ -785,7 +841,7 @@ def app():
                 simplify_eps_coeff,
                 input_type,
             ],
-            outputs=[class_selector, output_gallery],
+            outputs=[class_selector, class_filter_query, output_gallery],
         )
 
         # 「取消全選」按鈕：清空並即時重繪（不顯示任何類別）
@@ -802,6 +858,7 @@ def app():
             input_type_in,
         ):
             update_component = gr.update(value=[])
+            class_filter_query_update = gr.update(value="")
             gallery = replot_all_filtered(
                 last_results_dict,
                 label_mode_in,
@@ -815,7 +872,7 @@ def app():
                 input_type_in,
                 [],
             )
-            return update_component, gallery
+            return update_component, class_filter_query_update, gallery
 
         clear_all_btn.click(
             fn=clear_all_and_replot,
@@ -831,7 +888,7 @@ def app():
                 simplify_eps_coeff,
                 input_type,
             ],
-            outputs=[class_selector, output_gallery],
+            outputs=[class_selector, class_filter_query, output_gallery],
         )
 
 
