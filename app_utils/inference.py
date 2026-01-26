@@ -104,6 +104,7 @@ def annotate_from_results(
     show_boxes: bool,
     show_masks: bool,
     show_polygons: bool,
+    show_points: bool,
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
@@ -140,8 +141,9 @@ def annotate_from_results(
             for seg in polys:
                 pts = np.asarray(seg, dtype=np.int32).reshape(-1, 1, 2)
                 cv2.polylines(base, [pts], isClosed=True, color=color, thickness=2)
-                for x, y in np.asarray(seg, dtype=np.int32):
-                    cv2.circle(base, (int(x), int(y)), radius=3, color=(255, 255, 255), thickness=1)
+                if show_points:
+                    for x, y in np.asarray(seg, dtype=np.int32):
+                        cv2.circle(base, (int(x), int(y)), radius=3, color=(255, 255, 255), thickness=1)
     # ---- 再畫 label ----
     if label_mode == "隱藏":
         return base
@@ -582,6 +584,7 @@ def infer_image_single(
     show_boxes: bool,
     show_masks: bool,
     show_polygons: bool,
+    show_points: bool,
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
@@ -598,6 +601,7 @@ def infer_image_single(
         show_boxes,
         show_masks,
         show_polygons,
+        show_points,
         show_confidence,
         simplify_mode,
         simplify_eps_coeff,
@@ -617,6 +621,7 @@ def infer_video_single(
     show_boxes: bool,
     show_masks: bool,
     show_polygons: bool,
+    show_points: bool,
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
@@ -670,6 +675,7 @@ def infer_video_single(
             show_boxes,
             show_masks,
             show_polygons,
+            show_points,
             show_confidence,
             simplify_mode,
             simplify_eps_coeff,
@@ -692,6 +698,7 @@ def yolov12_multi_inference_image(
     show_boxes: bool,
     show_masks: bool,
     show_polygons: bool,
+    show_points: bool,
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
@@ -717,6 +724,7 @@ def yolov12_multi_inference_image(
             show_boxes,
             show_masks,
             show_polygons,
+            show_points,
             show_confidence,
             simplify_mode,
             simplify_eps_coeff,
@@ -738,6 +746,7 @@ def yolov12_multi_inference_video(
     show_boxes: bool,
     show_masks: bool,
     show_polygons: bool,
+    show_points: bool,
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
@@ -772,6 +781,7 @@ def yolov12_multi_inference_video(
             show_boxes,
             show_masks,
             show_polygons,
+            show_points,
             show_confidence,
             simplify_mode,
             simplify_eps_coeff,
@@ -819,7 +829,9 @@ def yolov12_inference_for_examples(
         label_mode,
         show_boxes,
         show_masks,
+        show_masks,
         True,   # show_polygons
+        True,   # show_points
         True,   # show_confidence
         "rdp",
         1.0,
