@@ -149,6 +149,9 @@ def app():
                         choices=[],
                         value=[],
                     )
+                    with gr.Row():
+                        step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
+                        step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
                 gr.Markdown(
                     "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
                 )
@@ -636,6 +639,22 @@ def app():
             fn=update_step_class_filter,
             inputs=[step_class_filter_query, class_choices_state, step_class_filter],
             outputs=[step_class_filter],
+        )
+        def step_select_all_classes(choices):
+            return gr.update(value=choices or []), gr.update(value="")
+
+        def step_clear_all_classes():
+            return gr.update(value=[]), gr.update(value="")
+
+        step_select_all_btn.click(
+            fn=step_select_all_classes,
+            inputs=[class_choices_state],
+            outputs=[step_class_filter, step_class_filter_query],
+        )
+        step_clear_all_btn.click(
+            fn=step_clear_all_classes,
+            inputs=[],
+            outputs=[step_class_filter, step_class_filter_query],
         )
         def replot_all_filtered(
             last_results_dict,
