@@ -311,6 +311,8 @@ def parse_mask_steps(steps_input) -> List[Tuple[str, int]]:
             if name not in {
                 "erode",
                 "dilate",
+                "distance_erode",
+                "distance_dilate",
                 "blur",
                 "remove_small",
                 "fill_holes",
@@ -345,6 +347,8 @@ def parse_mask_steps(steps_input) -> List[Tuple[str, int]]:
                 if name not in {
                     "erode",
                     "dilate",
+                    "distance_erode",
+                    "distance_dilate",
                     "blur",
                     "remove_small",
                     "fill_holes",
@@ -390,6 +394,21 @@ def _remove_small_components(binary: np.ndarray, min_area: int) -> np.ndarray:
         if area >= min_area:
             output[labels == label] = 1
     return output
+
+
+def _distance_dilate(binary: np.ndarray, radius: int) -> np.ndarray:
+    if radius <= 0:
+        return binary
+    inverted = (1 - binary).astype(np.uint8)
+    dist = cv2.distanceTransform(inverted, cv2.DIST_L2, 3)
+    return (dist <= radius).astype(np.uint8)
+
+
+def _distance_erode(binary: np.ndarray, radius: int) -> np.ndarray:
+    if radius <= 0:
+        return binary
+    dist = cv2.distanceTransform(binary.astype(np.uint8), cv2.DIST_L2, 3)
+    return (dist > radius).astype(np.uint8)
 
 
 def _fill_small_holes(binary: np.ndarray, max_hole_area: int) -> np.ndarray:
@@ -447,6 +466,7 @@ def apply_mask_optimizations_to_result(
         binaries = [(mask_np > 0.5).astype(np.uint8)]
         kernel_size = _ensure_odd(morph_kernel)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        distance_radius = max(1, kernel_size // 2)
         blur_size = _ensure_odd(blur_kernel)
 
         for step_name, count in steps:
@@ -458,6 +478,12 @@ def apply_mask_optimizations_to_result(
             elif step_name == "dilate":
                 for _ in range(count):
                     binaries = [cv2.dilate(b, kernel, iterations=1) for b in binaries]
+            elif step_name == "distance_erode":
+                for _ in range(count):
+                    binaries = [_distance_erode(b, distance_radius) for b in binaries]
+            elif step_name == "distance_dilate":
+                for _ in range(count):
+                    binaries = [_distance_dilate(b, distance_radius) for b in binaries]
             elif step_name == "blur":
                 for _ in range(count):
                     blurred = [

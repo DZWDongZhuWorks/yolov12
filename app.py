@@ -85,6 +85,8 @@ def app():
                         choices=[
                             "erode",
                             "dilate",
+                            "distance_erode",
+                            "distance_dilate",
                             "split",
                             "blur",
                             "remove_small",
