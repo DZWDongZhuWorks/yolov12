@@ -102,52 +102,76 @@ def app():
                         value=1,
                     )
                     mask_opt_add = gr.Button(value="加入步驟", variant="secondary")
+                with gr.Row():
+                    step_morph_kernel = gr.Slider(
+                        label="Morph Kernel (odd)",
+                        minimum=1,
+                        maximum=15,
+                        step=2,
+                        value=3,
+                    )
+                    step_blur_kernel = gr.Slider(
+                        label="Blur Kernel (odd)",
+                        minimum=1,
+                        maximum=15,
+                        step=2,
+                        value=3,
+                    )
+                    step_blur_threshold = gr.Slider(
+                        label="Blur Threshold",
+                        minimum=0.1,
+                        maximum=0.9,
+                        step=0.05,
+                        value=0.5,
+                    )
+                with gr.Row():
+                    step_min_component_area = gr.Slider(
+                        label="Min Component Area",
+                        minimum=0,
+                        maximum=5000,
+                        step=10,
+                        value=0,
+                    )
+                    step_max_hole_area = gr.Slider(
+                        label="Max Hole Area",
+                        minimum=0,
+                        maximum=5000,
+                        step=10,
+                        value=0,
+                    )
+                    step_class_filter = gr.Textbox(
+                        label="套用 Classes (逗號分隔，留空=全部)",
+                        placeholder="0,1 或 person,car",
+                    )
                 gr.Markdown(
-                    "可直接編輯下表調整順序與次數，空白行會被忽略。"
+                    "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
                 )
                 mask_opt_steps = gr.Dataframe(
-                    headers=["step", "count"],
-                    datatype=["str", "number"],
+                    headers=[
+                        "step",
+                        "count",
+                        "morph_kernel",
+                        "blur_kernel",
+                        "blur_threshold",
+                        "min_component_area",
+                        "max_hole_area",
+                        "classes",
+                    ],
+                    datatype=[
+                        "str",
+                        "number",
+                        "number",
+                        "number",
+                        "number",
+                        "number",
+                        "number",
+                        "str",
+                    ],
                     row_count=0,
-                    col_count=(2, "fixed"),
+                    col_count=(8, "fixed"),
                     wrap=True,
                     label="Mask 優化流程",
                     type="array",
-                )
-                morph_kernel = gr.Slider(
-                    label="Morph Kernel Size (odd)",
-                    minimum=1,
-                    maximum=15,
-                    step=2,
-                    value=3,
-                )
-                blur_kernel = gr.Slider(
-                    label="Blur Kernel Size (odd)",
-                    minimum=1,
-                    maximum=15,
-                    step=2,
-                    value=3,
-                )
-                blur_threshold = gr.Slider(
-                    label="Blur Threshold",
-                    minimum=0.1,
-                    maximum=0.9,
-                    step=0.05,
-                    value=0.5,
-                )
-                min_component_area = gr.Slider(
-                    label="Min Component Area",
-                    minimum=0,
-                    maximum=5000,
-                    step=10,
-                    value=0,
-                )
-                max_hole_area = gr.Slider(
-                    label="Max Hole Area",
-                    minimum=0,
-                    maximum=5000,
-                    step=10,
-                    value=0,
                 )
                 polygon_simplify = gr.Radio(
                     choices=["none", "convex_hull", "rdp"],
@@ -244,11 +268,6 @@ def app():
             show_conf_in,
             mask_opt_enable_in,
             mask_opt_steps_in,
-            morph_kernel_in,
-            blur_kernel_in,
-            blur_threshold_in,
-            min_component_area_in,
-            max_hole_area_in,
             simplify_mode_in,
             simplify_eps_coeff_in,
             saved_models_in,
@@ -327,11 +346,6 @@ def app():
                     results_cache,
                     mask_opt_enable_in,
                     mask_opt_steps_in,
-                    morph_kernel_in,
-                    blur_kernel_in,
-                    blur_threshold_in,
-                    min_component_area_in,
-                    max_hole_area_in,
                 )
 
                 # 4-2) 從第一個結果建立類別選單
@@ -445,11 +459,6 @@ def app():
                     allowed_class_ids=allowed_ids,
                     mask_opt_enable=mask_opt_enable_in,
                     mask_opt_steps=mask_opt_steps_in,
-                    morph_kernel=morph_kernel_in,
-                    blur_kernel=blur_kernel_in,
-                    blur_threshold=blur_threshold_in,
-                    min_component_area=min_component_area_in,
-                    max_hole_area=max_hole_area_in,
                 )
 
                 video_updates = [gr.update(value=None)] * 5
@@ -490,11 +499,6 @@ def app():
                 show_confidence,
                 mask_opt_enable,
                 mask_opt_steps,
-                morph_kernel,
-                blur_kernel,
-                blur_threshold,
-                min_component_area,
-                max_hole_area,
                 polygon_simplify,
                 simplify_eps_coeff,
                 saved_models_state,
@@ -519,7 +523,17 @@ def app():
         )
 
         # ======== 即時重繪（只針對 Image 模式） ========
-        def add_mask_step(steps, method, count):
+        def add_mask_step(
+            steps,
+            method,
+            count,
+            morph_kernel_in,
+            blur_kernel_in,
+            blur_threshold_in,
+            min_component_area_in,
+            max_hole_area_in,
+            class_filter_in,
+        ):
             if steps is None:
                 rows = []
             elif hasattr(steps, "tolist"):
@@ -528,12 +542,33 @@ def app():
                 rows = list(steps)
             else:
                 rows = []
-            rows.append([method, int(count)])
+            rows.append(
+                [
+                    method,
+                    int(count),
+                    morph_kernel_in,
+                    blur_kernel_in,
+                    blur_threshold_in,
+                    min_component_area_in,
+                    max_hole_area_in,
+                    class_filter_in,
+                ]
+            )
             return rows
 
         mask_opt_add.click(
             fn=add_mask_step,
-            inputs=[mask_opt_steps, mask_opt_method, mask_opt_count],
+            inputs=[
+                mask_opt_steps,
+                mask_opt_method,
+                mask_opt_count,
+                step_morph_kernel,
+                step_blur_kernel,
+                step_blur_threshold,
+                step_min_component_area,
+                step_max_hole_area,
+                step_class_filter,
+            ],
             outputs=[mask_opt_steps],
         )
         def replot_all_filtered(
@@ -631,11 +666,6 @@ def app():
             raw_results_dict,
             mask_opt_enable_in,
             mask_opt_steps_in,
-            morph_kernel_in,
-            blur_kernel_in,
-            blur_threshold_in,
-            min_component_area_in,
-            max_hole_area_in,
             label_mode_in,
             show_boxes_in,
             show_masks_in,
@@ -654,11 +684,6 @@ def app():
                 raw_results_dict,
                 mask_opt_enable_in,
                 mask_opt_steps_in,
-                morph_kernel_in,
-                blur_kernel_in,
-                blur_threshold_in,
-                min_component_area_in,
-                max_hole_area_in,
             )
 
             gallery = replot_all_filtered(
@@ -679,11 +704,6 @@ def app():
         for ctrl in (
             mask_opt_enable,
             mask_opt_steps,
-            morph_kernel,
-            blur_kernel,
-            blur_threshold,
-            min_component_area,
-            max_hole_area,
         ):
             ctrl.change(
                 fn=update_mask_processing,
@@ -691,11 +711,6 @@ def app():
                     raw_results,
                     mask_opt_enable,
                     mask_opt_steps,
-                    morph_kernel,
-                    blur_kernel,
-                    blur_threshold,
-                    min_component_area,
-                    max_hole_area,
                     label_mode,
                     show_boxes,
                     show_masks,

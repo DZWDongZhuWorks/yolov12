@@ -2,7 +2,7 @@
 
 import copy
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -276,7 +276,101 @@ def split_connection_contours(result):
     return updated
 
 
-def parse_mask_steps(steps_input) -> List[Tuple[str, int]]:
+DEFAULT_MORPH_KERNEL = 3
+DEFAULT_BLUR_KERNEL = 3
+DEFAULT_BLUR_THRESHOLD = 0.5
+DEFAULT_MIN_COMPONENT_AREA = 0
+DEFAULT_MAX_HOLE_AREA = 0
+
+
+def _coerce_int(value, default: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _coerce_float(value, default: float) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _normalize_class_filter(raw_value) -> Optional[List[object]]:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, (list, tuple, set)):
+        tokens = [t for t in raw_value if t not in (None, "")]
+    else:
+        text = str(raw_value).strip()
+        if not text or text.lower() in {"all", "*", "any"}:
+            return None
+        tokens = [t.strip() for t in text.replace("\n", ",").split(",") if t.strip()]
+    if not tokens:
+        return None
+    normalized: List[object] = []
+    for token in tokens:
+        if isinstance(token, (int, np.integer)):
+            normalized.append(int(token))
+            continue
+        try:
+            normalized.append(int(str(token)))
+        except Exception:
+            normalized.append(str(token))
+    return normalized or None
+
+
+def _resolve_class_filter(class_filter: Optional[List[object]], names: Dict[int, str]) -> Optional[Set[int]]:
+    if not class_filter:
+        return None
+    name_to_id = {str(name).lower(): int(idx) for idx, name in (names or {}).items()}
+    resolved: Set[int] = set()
+    for token in class_filter:
+        if isinstance(token, (int, np.integer)):
+            resolved.add(int(token))
+            continue
+        token_str = str(token).strip()
+        if not token_str:
+            continue
+        try:
+            resolved.add(int(token_str))
+            continue
+        except Exception:
+            pass
+        matched = name_to_id.get(token_str.lower())
+        if matched is not None:
+            resolved.add(matched)
+    return resolved or None
+
+
+def _build_step(
+    name: str,
+    count: int,
+    morph_kernel: int = DEFAULT_MORPH_KERNEL,
+    blur_kernel: int = DEFAULT_BLUR_KERNEL,
+    blur_threshold: float = DEFAULT_BLUR_THRESHOLD,
+    min_component_area: int = DEFAULT_MIN_COMPONENT_AREA,
+    max_hole_area: int = DEFAULT_MAX_HOLE_AREA,
+    classes=None,
+) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "count": max(1, int(count)),
+        "morph_kernel": _coerce_int(morph_kernel, DEFAULT_MORPH_KERNEL),
+        "blur_kernel": _coerce_int(blur_kernel, DEFAULT_BLUR_KERNEL),
+        "blur_threshold": _coerce_float(blur_threshold, DEFAULT_BLUR_THRESHOLD),
+        "min_component_area": _coerce_int(min_component_area, DEFAULT_MIN_COMPONENT_AREA),
+        "max_hole_area": _coerce_int(max_hole_area, DEFAULT_MAX_HOLE_AREA),
+        "classes": _normalize_class_filter(classes),
+    }
+
+
+def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
     if steps_input is None:
         return []
     
@@ -287,7 +381,7 @@ def parse_mask_steps(steps_input) -> List[Tuple[str, int]]:
     elif not steps_input:
         return []
 
-    steps: List[Tuple[str, int]] = []
+    steps: List[Dict[str, Any]] = []
     if isinstance(steps_input, str):
         raw_parts = []
         for part in steps_input.replace("\n", ",").split(","):
@@ -319,7 +413,7 @@ def parse_mask_steps(steps_input) -> List[Tuple[str, int]]:
                 "split",
             }:
                 continue
-            steps.append((name, count))
+            steps.append(_build_step(name=name, count=count))
     else:
         # Handle DataFrame or list of lists
         iterable = steps_input
@@ -334,12 +428,7 @@ def parse_mask_steps(steps_input) -> List[Tuple[str, int]]:
                 if not row or len(row) < 1:
                     continue
                 name = str(row[0]).strip().lower()
-                count = 1
-                if len(row) > 1 and row[1] not in (None, ""):
-                    try:
-                        count = int(row[1])
-                    except Exception:
-                        count = 1
+                count = _coerce_int(row[1] if len(row) > 1 else None, 1)
                 if count <= 0:
                     continue
                 if name == "contour_split":
@@ -355,7 +444,24 @@ def parse_mask_steps(steps_input) -> List[Tuple[str, int]]:
                     "split",
                 }:
                     continue
-                steps.append((name, count))
+                morph_kernel = row[2] if len(row) > 2 else DEFAULT_MORPH_KERNEL
+                blur_kernel = row[3] if len(row) > 3 else DEFAULT_BLUR_KERNEL
+                blur_threshold = row[4] if len(row) > 4 else DEFAULT_BLUR_THRESHOLD
+                min_component_area = row[5] if len(row) > 5 else DEFAULT_MIN_COMPONENT_AREA
+                max_hole_area = row[6] if len(row) > 6 else DEFAULT_MAX_HOLE_AREA
+                classes = row[7] if len(row) > 7 else None
+                steps.append(
+                    _build_step(
+                        name=name,
+                        count=count,
+                        morph_kernel=morph_kernel,
+                        blur_kernel=blur_kernel,
+                        blur_threshold=blur_threshold,
+                        min_component_area=min_component_area,
+                        max_hole_area=max_hole_area,
+                        classes=classes,
+                    )
+                )
         except Exception:
             return []
     return steps
@@ -433,14 +539,8 @@ def _fill_small_holes(binary: np.ndarray, max_hole_area: int) -> np.ndarray:
 def apply_mask_optimizations_to_result(
     result,
     enabled: bool,
-    steps_text: Optional[str],
-    morph_kernel: int,
-    blur_kernel: int,
-    blur_threshold: float,
-    min_component_area: int,
-    max_hole_area: int,
+    steps: List[Dict[str, Any]],
 ):
-    steps = parse_mask_steps(steps_text)
     if not enabled or not steps:
         return result
     if not hasattr(result, "masks") or result.masks is None:
@@ -460,16 +560,35 @@ def apply_mask_optimizations_to_result(
 
     boxes_np = boxes_data.detach().cpu().numpy()
     is_track = result.boxes.is_track
+    names = getattr(result, "names", {}) or {}
+    resolved_steps: List[Dict[str, Any]] = []
+    for step in steps:
+        resolved_steps.append(
+            {
+                **step,
+                "class_filter": _resolve_class_filter(step.get("classes"), names),
+            }
+        )
 
     for i, mask_tensor in enumerate(masks):
         mask_np = mask_tensor.detach().cpu().numpy()
         binaries = [(mask_np > 0.5).astype(np.uint8)]
-        kernel_size = _ensure_odd(morph_kernel)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-        distance_radius = max(1, kernel_size // 2)
-        blur_size = _ensure_odd(blur_kernel)
+        cls_value = float(boxes_np[i][6] if is_track else boxes_np[i][5])
+        cls_id = int(cls_value)
 
-        for step_name, count in steps:
+        for step in resolved_steps:
+            step_name = step["name"]
+            count = step["count"]
+            class_filter = step.get("class_filter")
+            if class_filter is not None and cls_id not in class_filter:
+                continue
+            kernel_size = _ensure_odd(step["morph_kernel"])
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            distance_radius = max(1, kernel_size // 2)
+            blur_size = _ensure_odd(step["blur_kernel"])
+            blur_threshold = step["blur_threshold"]
+            min_component_area = step["min_component_area"]
+            max_hole_area = step["max_hole_area"]
             if not binaries:
                 break
             if step_name == "erode":
@@ -547,14 +666,9 @@ def apply_mask_optimizations_to_result(
 def apply_mask_optimizations(
     results_cache: Dict[str, Any],
     enabled: bool,
-    steps_text: Optional[str],
-    morph_kernel: int,
-    blur_kernel: int,
-    blur_threshold: float,
-    min_component_area: int,
-    max_hole_area: int,
+    steps_input,
 ) -> Dict[str, Any]:
-    steps = parse_mask_steps(steps_text)
+    steps = parse_mask_steps(steps_input)
     if not results_cache or not enabled or not steps:
         return results_cache
 
@@ -567,12 +681,7 @@ def apply_mask_optimizations(
             apply_mask_optimizations_to_result(
                 res,
                 enabled,
-                steps_text,
-                morph_kernel,
-                blur_kernel,
-                blur_threshold,
-                min_component_area,
-                max_hole_area,
+                steps,
             )
             for res in results
         ]
@@ -653,12 +762,7 @@ def infer_video_single(
     simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
     mask_opt_enabled: bool,
-    mask_opt_steps: Optional[str],
-    morph_kernel: int,
-    blur_kernel: int,
-    blur_threshold: float,
-    min_component_area: int,
-    max_hole_area: int,
+    mask_opt_steps,
 ):
     model = YOLO(model_id)
 
@@ -688,12 +792,7 @@ def infer_video_single(
             results[0] = apply_mask_optimizations_to_result(
                 results[0],
                 mask_opt_enabled,
-                mask_opt_steps,
-                morph_kernel,
-                blur_kernel,
-                blur_threshold,
-                min_component_area,
-                max_hole_area,
+                mask_steps,
             )
         annotated_bgr = annotate_from_results(
             results[0],
@@ -778,12 +877,7 @@ def yolov12_multi_inference_video(
     simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
     mask_opt_enabled: bool,
-    mask_opt_steps: Optional[str],
-    morph_kernel: int,
-    blur_kernel: int,
-    blur_threshold: float,
-    min_component_area: int,
-    max_hole_area: int,
+    mask_opt_steps,
 ):
     """
     同一支影片對多個模型推論。
@@ -814,11 +908,6 @@ def yolov12_multi_inference_video(
             allowed_class_ids,
             mask_opt_enabled,
             mask_opt_steps,
-            morph_kernel,
-            blur_kernel,
-            blur_threshold,
-            min_component_area,
-            max_hole_area,
         )
         outs.append((mid, out_path))
 
