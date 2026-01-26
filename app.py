@@ -18,7 +18,15 @@ from app_utils.export_utils import export_results_cache
 
 
 def app():
-    with gr.Blocks() as demo:
+    with gr.Blocks(
+        css="""
+#right-panel {
+  position: sticky;
+  top: 1rem;
+  align-self: flex-start;
+}
+"""
+    ) as demo:
         # === 初始模型清單（預設 + 已儲存自訂） ===
         initial_choices, initial_saved_custom = load_model_choices()
 
@@ -143,9 +151,9 @@ def app():
                     label="類別查詢",
                     placeholder="輸入關鍵字或 class id",
                 )
-                with gr.Accordion("套用 Classes（不選=全部）", open=False):
+                with gr.Accordion("套用 Classes", open=False):
                     step_class_filter = gr.CheckboxGroup(
-                        label="套用 Classes（不選=全部）",
+                        label="套用 Classes",
                         choices=[],
                         value=[],
                     )
@@ -153,7 +161,7 @@ def app():
                         step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                         step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
                 gr.Markdown(
-                    "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
+                    "可直接編輯下表調整順序、次數與參數（classes 留空 = 不套用任何類別）。"
                 )
                 mask_opt_steps = gr.Dataframe(
                     headers=[
@@ -227,7 +235,7 @@ def app():
                 image_meta_state = gr.State(value=None)
 
             # ======================= 右側：輸出 =======================
-            with gr.Column():
+            with gr.Column(elem_id="right-panel"):
                 # 影像輸出：Gallery 並排
                 output_gallery = gr.Gallery(
                     label="Annotated Images（多模型比較）",
@@ -306,7 +314,7 @@ def app():
                     gr.update(),  # class_selector
                     class_choices_in or [],  # class_choices_state
                     None,  # image_meta_state
-                    gr.update(choices=class_choices_in or [], value=[]),  # step_class_filter
+                    gr.update(),  # step_class_filter
                     gr.update(value=""),
                     gr.update(value=""),
                 )
@@ -337,7 +345,7 @@ def app():
                         gr.update(),  # class_selector
                         class_choices_in or [],
                         None,
-                        gr.update(choices=class_choices_in or [], value=[]),
+                        gr.update(),
                         gr.update(value=""),
                         gr.update(value=""),
                     )
@@ -379,8 +387,8 @@ def app():
                 else:
                     class_choices_new = []
 
-                # 若是第一次推論（或尚未選擇任何類別），預設「全選」
-                if not class_selected_items_in and class_choices_new:
+                # 若是第一次推論（尚未選擇任何類別），預設「全選」
+                if class_selected_items_in is None and class_choices_new:
                     class_selected_items_out = class_choices_new
                 else:
                     # 使用既有勾選（但要過濾掉已不存在的項目）
@@ -395,7 +403,7 @@ def app():
                 )
                 step_class_filter_update = gr.update(
                     choices=class_choices_new,
-                    value=[],
+                    value=class_choices_new,
                 )
                 class_filter_query_update = gr.update(value="")
                 step_filter_query_update = gr.update(value="")
@@ -468,7 +476,7 @@ def app():
                         gr.update(),  # class_selector
                         class_choices_in or [],
                         None,
-                        gr.update(choices=class_choices_in or [], value=[]),
+                        gr.update(),
                         gr.update(value=""),
                         gr.update(value=""),
                     )
@@ -510,7 +518,7 @@ def app():
                     gr.update(),  # class_selector：維持原樣
                     class_choices_in or [],
                     None,  # image_meta_state（影片無需）
-                    gr.update(choices=class_choices_in or [], value=[]),
+                    gr.update(),
                     gr.update(value=""),
                     gr.update(value=""),
                 )
