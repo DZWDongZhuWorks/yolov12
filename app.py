@@ -85,6 +85,8 @@ def app():
                         choices=[
                             "erode",
                             "dilate",
+                            "distance_erode",
+                            "distance_dilate",
                             "split",
                             "blur",
                             "remove_small",
@@ -100,52 +102,85 @@ def app():
                         value=1,
                     )
                     mask_opt_add = gr.Button(value="加入步驟", variant="secondary")
+                with gr.Row():
+                    step_morph_kernel = gr.Slider(
+                        label="Morph Kernel (odd)",
+                        minimum=1,
+                        maximum=15,
+                        step=2,
+                        value=3,
+                    )
+                    step_blur_kernel = gr.Slider(
+                        label="Blur Kernel (odd)",
+                        minimum=1,
+                        maximum=15,
+                        step=2,
+                        value=3,
+                    )
+                    step_blur_threshold = gr.Slider(
+                        label="Blur Threshold",
+                        minimum=0.1,
+                        maximum=0.9,
+                        step=0.05,
+                        value=0.5,
+                    )
+                with gr.Row():
+                    step_min_component_area = gr.Slider(
+                        label="Min Component Area",
+                        minimum=0,
+                        maximum=5000,
+                        step=10,
+                        value=0,
+                    )
+                    step_max_hole_area = gr.Slider(
+                        label="Max Hole Area",
+                        minimum=0,
+                        maximum=5000,
+                        step=10,
+                        value=0,
+                    )
+                step_class_filter_query = gr.Textbox(
+                    label="類別查詢",
+                    placeholder="輸入關鍵字或 class id",
+                )
+                with gr.Accordion("套用 Classes（不選=全部）", open=False):
+                    step_class_filter = gr.CheckboxGroup(
+                        label="套用 Classes（不選=全部）",
+                        choices=[],
+                        value=[],
+                    )
+                    with gr.Row():
+                        step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
+                        step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
                 gr.Markdown(
-                    "可直接編輯下表調整順序與次數，空白行會被忽略。"
+                    "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
                 )
                 mask_opt_steps = gr.Dataframe(
-                    headers=["step", "count"],
-                    datatype=["str", "number"],
+                    headers=[
+                        "step",
+                        "count",
+                        "morph_kernel",
+                        "blur_kernel",
+                        "blur_threshold",
+                        "min_component_area",
+                        "max_hole_area",
+                        "classes",
+                    ],
+                    datatype=[
+                        "str",
+                        "number",
+                        "number",
+                        "number",
+                        "number",
+                        "number",
+                        "number",
+                        "str",
+                    ],
                     row_count=0,
-                    col_count=(2, "fixed"),
+                    col_count=(8, "fixed"),
                     wrap=True,
                     label="Mask 優化流程",
                     type="array",
-                )
-                morph_kernel = gr.Slider(
-                    label="Morph Kernel Size (odd)",
-                    minimum=1,
-                    maximum=15,
-                    step=2,
-                    value=3,
-                )
-                blur_kernel = gr.Slider(
-                    label="Blur Kernel Size (odd)",
-                    minimum=1,
-                    maximum=15,
-                    step=2,
-                    value=3,
-                )
-                blur_threshold = gr.Slider(
-                    label="Blur Threshold",
-                    minimum=0.1,
-                    maximum=0.9,
-                    step=0.05,
-                    value=0.5,
-                )
-                min_component_area = gr.Slider(
-                    label="Min Component Area",
-                    minimum=0,
-                    maximum=5000,
-                    step=10,
-                    value=0,
-                )
-                max_hole_area = gr.Slider(
-                    label="Max Hole Area",
-                    minimum=0,
-                    maximum=5000,
-                    step=10,
-                    value=0,
                 )
                 polygon_simplify = gr.Radio(
                     choices=["none", "convex_hull", "rdp"],
@@ -171,7 +206,11 @@ def app():
 
                 # 類別篩選
                 gr.Markdown("### 類別篩選（預設全選）")
-                with gr.Row():
+                class_filter_query = gr.Textbox(
+                    label="類別查詢",
+                    placeholder="輸入關鍵字或 class id",
+                )
+                with gr.Accordion("類別（ID: 名稱）", open=False):
                     class_selector = gr.CheckboxGroup(
                         label="類別（ID: 名稱）",
                         choices=[],
@@ -242,11 +281,6 @@ def app():
             show_conf_in,
             mask_opt_enable_in,
             mask_opt_steps_in,
-            morph_kernel_in,
-            blur_kernel_in,
-            blur_threshold_in,
-            min_component_area_in,
-            max_hole_area_in,
             simplify_mode_in,
             simplify_eps_coeff_in,
             saved_models_in,
@@ -272,6 +306,9 @@ def app():
                     gr.update(),  # class_selector
                     class_choices_in or [],  # class_choices_state
                     None,  # image_meta_state
+                    gr.update(choices=class_choices_in or [], value=[]),  # step_class_filter
+                    gr.update(value=""),
+                    gr.update(value=""),
                 )
 
             # 2) 持久化自訂模型選項
@@ -300,6 +337,9 @@ def app():
                         gr.update(),  # class_selector
                         class_choices_in or [],
                         None,
+                        gr.update(choices=class_choices_in or [], value=[]),
+                        gr.update(value=""),
+                        gr.update(value=""),
                     )
 
                 # 4-1) 多模型推論
@@ -325,11 +365,6 @@ def app():
                     results_cache,
                     mask_opt_enable_in,
                     mask_opt_steps_in,
-                    morph_kernel_in,
-                    blur_kernel_in,
-                    blur_threshold_in,
-                    min_component_area_in,
-                    max_hole_area_in,
                 )
 
                 # 4-2) 從第一個結果建立類別選單
@@ -358,6 +393,12 @@ def app():
                     choices=class_choices_new,
                     value=class_selected_items_out,
                 )
+                step_class_filter_update = gr.update(
+                    choices=class_choices_new,
+                    value=[],
+                )
+                class_filter_query_update = gr.update(value="")
+                step_filter_query_update = gr.update(value="")
 
                 # 4-3) 構建 image meta（檔名、寬高）
                 width = height = 0
@@ -409,6 +450,9 @@ def app():
                     class_selector_update,
                     class_choices_new,
                     image_meta,  # image_meta_state
+                    step_class_filter_update,
+                    class_filter_query_update,
+                    step_filter_query_update,
                 )
 
             # 5) Video 模式
@@ -424,6 +468,9 @@ def app():
                         gr.update(),  # class_selector
                         class_choices_in or [],
                         None,
+                        gr.update(choices=class_choices_in or [], value=[]),
+                        gr.update(value=""),
+                        gr.update(value=""),
                     )
 
                 outs = yolov12_multi_inference_video(
@@ -443,11 +490,6 @@ def app():
                     allowed_class_ids=allowed_ids,
                     mask_opt_enabled=mask_opt_enable_in,
                     mask_opt_steps=mask_opt_steps_in,
-                    morph_kernel=morph_kernel_in,
-                    blur_kernel=blur_kernel_in,
-                    blur_threshold=blur_threshold_in,
-                    min_component_area=min_component_area_in,
-                    max_hole_area=max_hole_area_in,
                 )
 
                 video_updates = [gr.update(value=None, visible=False)] * 5
@@ -468,6 +510,9 @@ def app():
                     gr.update(),  # class_selector：維持原樣
                     class_choices_in or [],
                     None,  # image_meta_state（影片無需）
+                    gr.update(choices=class_choices_in or [], value=[]),
+                    gr.update(value=""),
+                    gr.update(value=""),
                 )
 
         yolov12_infer.click(
@@ -488,11 +533,6 @@ def app():
                 show_confidence,
                 mask_opt_enable,
                 mask_opt_steps,
-                morph_kernel,
-                blur_kernel,
-                blur_threshold,
-                min_component_area,
-                max_hole_area,
                 polygon_simplify,
                 simplify_eps_coeff,
                 saved_models_state,
@@ -513,11 +553,46 @@ def app():
                 class_selector,
                 class_choices_state,
                 image_meta_state,
+                step_class_filter,
+                class_filter_query,
+                step_class_filter_query,
             ],
         )
 
         # ======== 即時重繪（只針對 Image 模式） ========
-        def add_mask_step(steps, method, count):
+        def _filter_class_choices(query_text: str, choices: List[str]) -> List[str]:
+            if not choices:
+                return []
+            query = (query_text or "").strip().lower()
+            if not query:
+                return choices
+            filtered: List[str] = []
+            for choice in choices:
+                choice_text = str(choice).lower()
+                if query in choice_text:
+                    filtered.append(choice)
+            return filtered
+
+        def update_class_selector_filter(query_text, choices, selected):
+            filtered = _filter_class_choices(query_text, choices)
+            selected_set = set(selected or [])
+            return gr.update(choices=filtered, value=[c for c in filtered if c in selected_set])
+
+        def update_step_class_filter(query_text, choices, selected):
+            filtered = _filter_class_choices(query_text, choices)
+            selected_set = set(selected or [])
+            return gr.update(choices=filtered, value=[c for c in filtered if c in selected_set])
+        def add_mask_step(
+            steps,
+            method,
+            count,
+            morph_kernel_in,
+            blur_kernel_in,
+            blur_threshold_in,
+            min_component_area_in,
+            max_hole_area_in,
+            class_filter_in,
+        ):
             if steps is None:
                 rows = []
             elif hasattr(steps, "tolist"):
@@ -526,13 +601,60 @@ def app():
                 rows = list(steps)
             else:
                 rows = []
-            rows.append([method, int(count)])
+            rows.append(
+                [
+                    method,
+                    int(count),
+                    morph_kernel_in,
+                    blur_kernel_in,
+                    blur_threshold_in,
+                    min_component_area_in,
+                    max_hole_area_in,
+                    class_filter_in,
+                ]
+            )
             return rows
 
         mask_opt_add.click(
             fn=add_mask_step,
-            inputs=[mask_opt_steps, mask_opt_method, mask_opt_count],
+            inputs=[
+                mask_opt_steps,
+                mask_opt_method,
+                mask_opt_count,
+                step_morph_kernel,
+                step_blur_kernel,
+                step_blur_threshold,
+                step_min_component_area,
+                step_max_hole_area,
+                step_class_filter,
+            ],
             outputs=[mask_opt_steps],
+        )
+        class_filter_query.change(
+            fn=update_class_selector_filter,
+            inputs=[class_filter_query, class_choices_state, class_selector],
+            outputs=[class_selector],
+        )
+        step_class_filter_query.change(
+            fn=update_step_class_filter,
+            inputs=[step_class_filter_query, class_choices_state, step_class_filter],
+            outputs=[step_class_filter],
+        )
+        def step_select_all_classes(choices):
+            return gr.update(value=choices or []), gr.update(value="")
+
+        def step_clear_all_classes():
+            return gr.update(value=[]), gr.update(value="")
+
+        step_select_all_btn.click(
+            fn=step_select_all_classes,
+            inputs=[class_choices_state],
+            outputs=[step_class_filter, step_class_filter_query],
+        )
+        step_clear_all_btn.click(
+            fn=step_clear_all_classes,
+            inputs=[],
+            outputs=[step_class_filter, step_class_filter_query],
         )
         def replot_all_filtered(
             last_results_dict,
@@ -629,11 +751,6 @@ def app():
             raw_results_dict,
             mask_opt_enable_in,
             mask_opt_steps_in,
-            morph_kernel_in,
-            blur_kernel_in,
-            blur_threshold_in,
-            min_component_area_in,
-            max_hole_area_in,
             label_mode_in,
             show_boxes_in,
             show_masks_in,
@@ -652,11 +769,6 @@ def app():
                 raw_results_dict,
                 mask_opt_enable_in,
                 mask_opt_steps_in,
-                morph_kernel_in,
-                blur_kernel_in,
-                blur_threshold_in,
-                min_component_area_in,
-                max_hole_area_in,
             )
 
             gallery = replot_all_filtered(
@@ -677,11 +789,6 @@ def app():
         for ctrl in (
             mask_opt_enable,
             mask_opt_steps,
-            morph_kernel,
-            blur_kernel,
-            blur_threshold,
-            min_component_area,
-            max_hole_area,
         ):
             ctrl.change(
                 fn=update_mask_processing,
@@ -689,11 +796,6 @@ def app():
                     raw_results,
                     mask_opt_enable,
                     mask_opt_steps,
-                    morph_kernel,
-                    blur_kernel,
-                    blur_threshold,
-                    min_component_area,
-                    max_hole_area,
                     label_mode,
                     show_boxes,
                     show_masks,
@@ -726,6 +828,7 @@ def app():
         ):
             # 將值設為目前 choices（全選）
             update_component = gr.update(value=class_choices_in or [])
+            class_filter_query_update = gr.update(value="")
             # 重繪
             gallery = replot_all_filtered(
                 last_results_dict,
@@ -740,7 +843,7 @@ def app():
                 input_type_in,
                 class_choices_in or [],
             )
-            return update_component, gallery
+            return update_component, class_filter_query_update, gallery
 
         select_all_btn.click(
             fn=select_all_and_replot,
@@ -757,7 +860,7 @@ def app():
                 simplify_eps_coeff,
                 input_type,
             ],
-            outputs=[class_selector, output_gallery],
+            outputs=[class_selector, class_filter_query, output_gallery],
         )
 
         # 「取消全選」按鈕：清空並即時重繪（不顯示任何類別）
@@ -774,6 +877,7 @@ def app():
             input_type_in,
         ):
             update_component = gr.update(value=[])
+            class_filter_query_update = gr.update(value="")
             gallery = replot_all_filtered(
                 last_results_dict,
                 label_mode_in,
@@ -787,7 +891,7 @@ def app():
                 input_type_in,
                 [],
             )
-            return update_component, gallery
+            return update_component, class_filter_query_update, gallery
 
         clear_all_btn.click(
             fn=clear_all_and_replot,
@@ -803,7 +907,7 @@ def app():
                 simplify_eps_coeff,
                 input_type,
             ],
-            outputs=[class_selector, output_gallery],
+            outputs=[class_selector, class_filter_query, output_gallery],
         )
 
 
