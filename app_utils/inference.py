@@ -89,6 +89,14 @@ def filter_result_by_classes(result, allowed_class_ids: Optional[List[int]]):
     else:
         r.boxes = None
 
+    if hasattr(result, "obb") and result.obb is not None and len(result.obb) > 0:
+        cls_arr = result.obb.cls.cpu().numpy().astype(int)
+        allow = set(allowed_class_ids)
+        keep_idx = [i for i, cid in enumerate(cls_arr) if cid in allow]
+        r.obb = result.obb[keep_idx] if len(keep_idx) > 0 else None
+    else:
+        r.obb = None
+
     # masks 與 boxes 順序一致，沿用 keep_idx
     if hasattr(result, "masks") and result.masks is not None:
         r.masks = result.masks[keep_idx] if len(keep_idx) > 0 else None
@@ -145,55 +153,81 @@ def annotate_from_results(
     # ---- 再畫 label ----
     if label_mode == "隱藏":
         return base
-    if not hasattr(filtered, "boxes") or filtered.boxes is None or len(filtered.boxes) == 0:
+    if label_mode == "隱藏":
         return base
+    
+    # === [NEW] Detect if we have boxes or obb ===
+    has_boxes = (hasattr(filtered, "boxes") and filtered.boxes is not None and len(filtered.boxes) > 0)
+    has_obb = (hasattr(filtered, "obb") and filtered.obb is not None and len(filtered.obb) > 0)
 
+    if not has_boxes and not has_obb:
+        return base
+    
+    # Common resources
     names = getattr(result, "names", None) or {}
-    xyxy = filtered.boxes.xyxy.cpu().numpy()
-    cls_arr = filtered.boxes.cls.cpu().numpy().astype(int)
-
-    # 可能沒有 conf，保險起見
-    conf_arr = None
-    try:
-        conf_arr = filtered.boxes.conf.cpu().numpy()
-    except Exception:
-        pass
-
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.5
     thickness = 1
     pad = 3
 
-    for i, ((x1, y1, x2, y2), cid) in enumerate(zip(xyxy, cls_arr)):
-        x1, y1 = int(x1), int(y1)
+    # ==========================
+    # 1) Handle Standard Boxes
+    # ==========================
+    if has_boxes:
+        xyxy = filtered.boxes.xyxy.cpu().numpy()
+        cls_arr = filtered.boxes.cls.cpu().numpy().astype(int)
+        conf_arr = None
+        try:
+            conf_arr = filtered.boxes.conf.cpu().numpy()
+        except Exception:
+            pass
 
-        # 基本標籤（ID 或 Name）
-        base_text = f"{cid}" if label_mode == "顯示 class id" else names.get(cid, str(cid))
+        for i, ((x1, y1, x2, y2), cid) in enumerate(zip(xyxy, cls_arr)):
+            x1, y1 = int(x1), int(y1)
+            # -> Draw label
+            base_text = f"{cid}" if label_mode == "顯示 class id" else names.get(cid, str(cid))
+            if show_confidence and conf_arr is not None and i < len(conf_arr):
+                base_text = f"{base_text} {conf_arr[i]:.2f}"
+            
+            c_bgr = tuple(int(v) for v in ucolors(cid, bgr=True))
+            (tw, th), baseline = cv2.getTextSize(base_text, font, font_scale, thickness)
+            y_top = max(0, y1 - th - 2 * pad)
+            cv2.rectangle(base, (x1, y_top), (x1 + tw + 2 * pad, y1), c_bgr, -1)
+            b, g, r = c_bgr
+            luminance = 0.299*r + 0.587*g + 0.114*b
+            text_color = (0, 0, 0) if luminance > 160 else (255, 255, 255)
+            cv2.putText(base, base_text, (x1 + pad, y1 - pad), font, font_scale, text_color, thickness, cv2.LINE_AA)
 
-        # 需要的話加上 conf
-        if show_confidence and conf_arr is not None and i < len(conf_arr):
-            base_text = f"{base_text} {conf_arr[i]:.2f}"
+    # ==========================
+    # 2) Handle OBB
+    # ==========================
+    if has_obb:
+        # xyxyxyxy = filtered.obb.xyxyxyxy.cpu().numpy() # 4 points
+        # Or simpler: use xyxy enclosing rect for label placement
+        # OBB object in ultralytics usually has .xyxy property providing axis-aligned bounds
+        obb_xyxy = filtered.obb.xyxy.cpu().numpy()
+        cls_arr = filtered.obb.cls.cpu().numpy().astype(int)
+        conf_arr = None
+        try:
+            conf_arr = filtered.obb.conf.cpu().numpy()
+        except Exception:
+            pass
 
-        c_bgr = tuple(int(v) for v in ucolors(cid, bgr=True))
-        (tw, th), baseline = cv2.getTextSize(base_text, font, font_scale, thickness)
-        y_top = max(0, y1 - th - 2 * pad)
+        for i, ((x1, y1, x2, y2), cid) in enumerate(zip(obb_xyxy, cls_arr)):
+            x1, y1 = int(x1), int(y1)
+            # -> Draw label (same logic)
+            base_text = f"{cid}" if label_mode == "顯示 class id" else names.get(cid, str(cid))
+            if show_confidence and conf_arr is not None and i < len(conf_arr):
+                base_text = f"{base_text} {conf_arr[i]:.2f}"
 
-        cv2.rectangle(base, (x1, y_top), (x1 + tw + 2 * pad, y1), c_bgr, -1)
-
-        # --- 根據背景亮度自動選字色 ---
-        b, g, r = c_bgr
-        luminance = 0.299*r + 0.587*g + 0.114*b
-        text_color = (0, 0, 0) if luminance > 160 else (255, 255, 255)
-        cv2.putText(
-            base,
-            base_text,
-            (x1 + pad, y1 - pad),
-            font,
-            font_scale,
-            text_color,
-            thickness,
-            cv2.LINE_AA,
-        )
+            c_bgr = tuple(int(v) for v in ucolors(cid, bgr=True))
+            (tw, th), baseline = cv2.getTextSize(base_text, font, font_scale, thickness)
+            y_top = max(0, y1 - th - 2 * pad)
+            cv2.rectangle(base, (x1, y_top), (x1 + tw + 2 * pad, y1), c_bgr, -1)
+            b, g, r = c_bgr
+            luminance = 0.299*r + 0.587*g + 0.114*b
+            text_color = (0, 0, 0) if luminance > 160 else (255, 255, 255)
+            cv2.putText(base, base_text, (x1 + pad, y1 - pad), font, font_scale, text_color, thickness, cv2.LINE_AA)
 
     return base
 

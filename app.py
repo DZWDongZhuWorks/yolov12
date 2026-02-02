@@ -437,7 +437,7 @@ def app():
                     simplify_mode_in,
                     simplify_eps_coeff_in,
                     allowed_class_ids=allowed_ids,
-                    mask_opt_enable=mask_opt_enable_in,
+                    mask_opt_enabled=mask_opt_enable_in,
                     mask_opt_steps=mask_opt_steps_in,
                     morph_kernel=morph_kernel_in,
                     blur_kernel=blur_kernel_in,
@@ -446,9 +446,9 @@ def app():
                     max_hole_area=max_hole_area_in,
                 )
 
-                video_updates = [gr.update(value=None)] * 5
+                video_updates = [gr.update(value=None, visible=False)] * 5
                 for idx, (mid, out_path) in enumerate(outs[:5]):
-                    video_updates[idx] = gr.update(value=out_path, label=str(mid))
+                    video_updates[idx] = gr.update(value=out_path, label=str(mid), visible=True)
 
                 return (
                     gr.update(),  # output_gallery
