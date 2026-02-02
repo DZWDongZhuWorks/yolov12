@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import cv2
 import numpy as np
 import torch
+from tqdm import tqdm
 from ultralytics import YOLO
 from ultralytics.utils import ops
 from ultralytics.utils.plotting import colors as ucolors
@@ -22,6 +23,18 @@ except Exception:
 # -----------------------------
 # 類別選單 / 類別解析
 # -----------------------------
+def get_model_names(model_id: str) -> Dict[Any, str]:
+    """
+    Load the model and return its class names.
+    """
+    try:
+        model = YOLO(model_id)
+        return model.names or {}
+    except Exception as e:
+        print(f"Error loading model {model_id}: {e}")
+        return {}
+
+
 def names_to_choice_list(names: Dict[Any, str]) -> Tuple[List[str], List[int]]:
     """
     將 {id: name} 轉成
@@ -812,6 +825,7 @@ def infer_video_single(
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     out_path = tempfile.mktemp(suffix=".webm")
     out = cv2.VideoWriter(
@@ -822,6 +836,9 @@ def infer_video_single(
     )
     mask_steps = parse_mask_steps(mask_opt_steps)
 
+    # Add progress bar with ETA
+    pbar = tqdm(total=total_frames, desc=f"Processing {model_id}", unit="frame")
+    
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -849,7 +866,9 @@ def infer_video_single(
             allowed_class_ids,
         )
         out.write(annotated_bgr)
+        pbar.update(1)
 
+    pbar.close()
     cap.release()
     out.release()
     return out_path

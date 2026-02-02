@@ -13,6 +13,7 @@ from app_utils.inference import (
     yolov12_multi_inference_image,
     yolov12_multi_inference_video,
     yolov12_inference_for_examples,
+    get_model_names,
 )
 from app_utils.export_utils import export_results_cache
 
@@ -45,6 +46,10 @@ def app():
                     allow_custom_value=True,
                     multiselect=True,
                 )
+                
+                with gr.Row():
+                    load_model_btn = gr.Button(value="讀取模型資訊 (取得 class list)", size="sm", variant="secondary")
+
 
                 image_size = gr.Slider(
                     label="Image Size",
@@ -225,6 +230,10 @@ def app():
                 class_choices_state = gr.State(value=[])
                 # 保存當前影像中繼資訊（檔名、寬高）
                 image_meta_state = gr.State(value=None)
+                
+                # Global Selection State (To persist selection even when filtered)
+                selected_classes_global = gr.State(value=[])
+                step_selected_classes_global = gr.State(value=[])
 
             # ======================= 右側：輸出 =======================
             with gr.Column():
@@ -367,6 +376,24 @@ def app():
                     mask_opt_steps_in,
                 )
 
+                # Re-render gallery if mask optimization is enabled
+                if mask_opt_enable_in and mask_opt_steps_in:
+                    gallery = []
+                    for mid, results in results_cache.items():
+                        annotated_bgr = annotate_from_results(
+                            results[0],
+                            label_mode_in,
+                            show_boxes_in,
+                            show_masks_in,
+                            show_polygons_in,
+                            show_points_in,
+                            show_conf_in,
+                            simplify_mode_in,
+                            simplify_eps_coeff_in,
+                            allowed_ids,
+                        )
+                        gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
+
                 # 4-2) 從第一個結果建立類別選單
                 try:
                     first_result = next(iter(raw_results_cache.values()))[0]
@@ -453,6 +480,8 @@ def app():
                     step_class_filter_update,
                     class_filter_query_update,
                     step_filter_query_update,
+                    gr.update(value=class_selected_items_out),  # Update Global Selection
+                    gr.update(value=[]), # Update Step Global Selection
                 )
 
             # 5) Video 模式
@@ -471,6 +500,8 @@ def app():
                         gr.update(choices=class_choices_in or [], value=[]),
                         gr.update(value=""),
                         gr.update(value=""),
+                        gr.update(),  # selected_classes_global
+                        gr.update(),  # step_selected_classes_global
                     )
 
                 outs = yolov12_multi_inference_video(
@@ -513,6 +544,8 @@ def app():
                     gr.update(choices=class_choices_in or [], value=[]),
                     gr.update(value=""),
                     gr.update(value=""),
+                    gr.update(),  # selected_classes_global (維持原樣)
+                    gr.update(),  # step_selected_classes_global (維持原樣)
                 )
 
         yolov12_infer.click(
@@ -556,6 +589,8 @@ def app():
                 step_class_filter,
                 class_filter_query,
                 step_class_filter_query,
+                selected_classes_global,      # NEW output
+                step_selected_classes_global, # NEW output
             ],
         )
 
@@ -573,15 +608,85 @@ def app():
                     filtered.append(choice)
             return filtered
 
-        def update_class_selector_filter(query_text, choices, selected):
-            filtered = _filter_class_choices(query_text, choices)
-            selected_set = set(selected or [])
-            return gr.update(choices=filtered, value=[c for c in filtered if c in selected_set])
+        def update_global_selection(query_text, all_choices, current_visible_selection, old_global_selection):
+            # 1. Determine visible choices
+            visible_choices = _filter_class_choices(query_text, all_choices)
+            visible_set = set(visible_choices)
+            
+            # 2. Keep items from old global that are NOT visible (hidden ones)
+            hidden_selected = [c for c in (old_global_selection or []) if c not in visible_set]
+            
+            # 3. Add items currently selected in the visible UI
+            # Note: current_visible_selection might contain items not in visible_set if logic is loose, 
+            # but usually it comes from CheckboxGroup value which is restricted to choices.
+            new_global_set = set(hidden_selected + (current_visible_selection or []))
+            
+            # 4. Sort to maintain consistency (optional but good for UX)
+            # Try to sort by ID if possible
+            def sort_key(s):
+                try:
+                    return int(str(s).split(":")[0])
+                except:
+                    return str(s)
+            
+            return sorted(list(new_global_set), key=sort_key)
 
-        def update_step_class_filter(query_text, choices, selected):
-            filtered = _filter_class_choices(query_text, choices)
-            selected_set = set(selected or [])
-            return gr.update(choices=filtered, value=[c for c in filtered if c in selected_set])
+        def update_class_selector_filter_and_sync(query_text, all_choices, global_selected):
+            # Calculate visible choices
+            filtered = _filter_class_choices(query_text, all_choices)
+            valid_global = set(global_selected or [])
+            # Value for UI is intersection of Visible & Global
+            ui_value = [c for c in filtered if c in valid_global]
+            return gr.update(choices=filtered, value=ui_value)
+
+        def on_class_selector_change(current_visible_selection, query_text, all_choices, old_global):
+            new_global = update_global_selection(query_text, all_choices, current_visible_selection, old_global)
+            return new_global
+
+        def on_step_class_selector_change(current_visible_selection, query_text, all_choices, old_global):
+            new_global = update_global_selection(query_text, all_choices, current_visible_selection, old_global)
+            return new_global
+
+        # ======== 讀取模型資訊 Logic ========
+        def load_models_info_click(model_ids_in):
+            if not model_ids_in:
+                return (
+                    gr.update(choices=[], value=[]), # class_selector
+                    gr.update(choices=[], value=[]), # step_class_filter
+                    [], # class_choices_state
+                    [], # selected_classes_global
+                    [], # step_selected_classes_global
+                )
+            
+            # 使用第一個模型來獲取 class list
+            mid = model_ids_in[0] if isinstance(model_ids_in, list) else model_ids_in
+            names = get_model_names(mid)
+            if not names:
+                return (
+                    gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+                )
+            
+            choices, _ = names_to_choice_list(names)
+            
+            return (
+                gr.update(choices=choices, value=choices),        # class_selector (default all)
+                gr.update(choices=choices, value=[]),             # step_class_filter
+                choices,                                          # class_choices_state
+                choices,                                          # selected_classes_global (default all)
+                [],                                               # step_selected_classes_global
+            )
+        
+        load_model_btn.click(
+            fn=load_models_info_click,
+            inputs=[model_ids],
+            outputs=[
+                class_selector,
+                step_class_filter,
+                class_choices_state,
+                selected_classes_global,
+                step_selected_classes_global,
+            ]
+        )
         def add_mask_step(
             steps,
             method,
@@ -594,7 +699,9 @@ def app():
             class_filter_in,
         ):
             if isinstance(class_filter_in, (list, tuple, set)):
-                class_filter_snapshot = list(class_filter_in)
+                # [Modified] Convert list to comma-joined string to avoid "['a', 'b']" stringification issue
+                valid_items = [str(x) for x in class_filter_in if x is not None]
+                class_filter_snapshot = ", ".join(valid_items)
             elif class_filter_in is None:
                 class_filter_snapshot = None
             else:
@@ -636,15 +743,33 @@ def app():
             ],
             outputs=[mask_opt_steps],
         )
+
+        
+        # --- Class Filter Logic Wiring ---
+        # 1. When Query Changes -> Update UI Choices & Value (Read from Global)
         class_filter_query.change(
-            fn=update_class_selector_filter,
-            inputs=[class_filter_query, class_choices_state, class_selector],
+            fn=update_class_selector_filter_and_sync,
+            inputs=[class_filter_query, class_choices_state, selected_classes_global],
             outputs=[class_selector],
         )
+        
+        # 2. When Checkbox Selection Changes -> Update Global State
+        class_selector.change(
+            fn=on_class_selector_change,
+            inputs=[class_selector, class_filter_query, class_choices_state, selected_classes_global],
+            outputs=[selected_classes_global],
+        )
+        
+        # --- Step Class Filter Logic Wiring ---
         step_class_filter_query.change(
-            fn=update_step_class_filter,
-            inputs=[step_class_filter_query, class_choices_state, step_class_filter],
+            fn=update_class_selector_filter_and_sync,
+            inputs=[step_class_filter_query, class_choices_state, step_selected_classes_global],
             outputs=[step_class_filter],
+        )
+        step_class_filter.change(
+             fn=on_step_class_selector_change,
+             inputs=[step_class_filter, step_class_filter_query, class_choices_state, step_selected_classes_global],
+             outputs=[step_selected_classes_global],
         )
         def step_select_all_classes(choices):
             return gr.update(value=choices or []), gr.update(value="")
@@ -729,15 +854,15 @@ def app():
                     polygon_simplify,
                     simplify_eps_coeff,
                     input_type,
-                    class_selector,
+                    selected_classes_global,
                 ],
                 outputs=[output_gallery],
             )
-
-        # 類別選取改變時即時重繪
-        class_selector.change(
-            fn=replot_all_filtered,
-            inputs=[
+ 
+        # Global Selection Change -> Replot
+        selected_classes_global.change(
+             fn=replot_all_filtered,
+             inputs=[
                 last_results,
                 label_mode,
                 show_boxes,
@@ -748,9 +873,9 @@ def app():
                 polygon_simplify,
                 simplify_eps_coeff,
                 input_type,
-                class_selector,
-            ],
-            outputs=[output_gallery],
+                selected_classes_global, # Use Global State
+             ],
+             outputs=[output_gallery],
         )
 
         def update_mask_processing(
@@ -811,7 +936,7 @@ def app():
                     polygon_simplify,
                     simplify_eps_coeff,
                     input_type,
-                    class_selector,
+                    selected_classes_global,
                 ],
                 outputs=[last_results, output_gallery],
             )
@@ -819,101 +944,23 @@ def app():
 
         # ======== 全選 / 取消全選 ========
         # 「選擇全選」按鈕：同步更新 Checkbox 與即時重繪
-        def select_all_and_replot(
-            class_choices_in,
-            last_results_dict,
-            label_mode_in,
-            show_boxes_in,
-            show_masks_in,
-            show_polygons_in,
-            show_points_in,
-            show_conf_in,
-            simplify_mode_in,
-            simplify_eps_coeff_in,
-            input_type_in,
-        ):
-            # 將值設為目前 choices（全選）
-            update_component = gr.update(value=class_choices_in or [])
-            class_filter_query_update = gr.update(value="")
-            # 重繪
-            gallery = replot_all_filtered(
-                last_results_dict,
-                label_mode_in,
-                show_boxes_in,
-                show_masks_in,
-                show_polygons_in,
-                show_points_in,
-                show_conf_in,
-                simplify_mode_in,
-                simplify_eps_coeff_in,
-                input_type_in,
-                class_choices_in or [],
-            )
-            return update_component, class_filter_query_update, gallery
+        def select_all_action(choices):
+            # Global=All, UI=All (if filter is empty, works out), Query=""
+            return (choices or []), gr.update(value=choices or []), gr.update(value="")
+
+        def clear_all_action():
+            return [], gr.update(value=[]), gr.update(value="")
 
         select_all_btn.click(
-            fn=select_all_and_replot,
-            inputs=[
-                class_choices_state,
-                last_results,
-                label_mode,
-                show_boxes,
-                show_masks,
-                show_polygons,
-                show_points,
-                show_confidence,
-                polygon_simplify,
-                simplify_eps_coeff,
-                input_type,
-            ],
-            outputs=[class_selector, class_filter_query, output_gallery],
+            fn=select_all_action,
+            inputs=[class_choices_state],
+            outputs=[selected_classes_global, class_selector, class_filter_query],
         )
 
-        # 「取消全選」按鈕：清空並即時重繪（不顯示任何類別）
-        def clear_all_and_replot(
-            last_results_dict,
-            label_mode_in,
-            show_boxes_in,
-            show_masks_in,
-            show_polygons_in,
-            show_points_in,
-            show_conf_in,
-            simplify_mode_in,
-            simplify_eps_coeff_in,
-            input_type_in,
-        ):
-            update_component = gr.update(value=[])
-            class_filter_query_update = gr.update(value="")
-            gallery = replot_all_filtered(
-                last_results_dict,
-                label_mode_in,
-                show_boxes_in,
-                show_masks_in,
-                show_polygons_in,
-                show_points_in,
-                show_conf_in,
-                simplify_mode_in,
-                simplify_eps_coeff_in,
-                input_type_in,
-                [],
-            )
-            return update_component, class_filter_query_update, gallery
-
         clear_all_btn.click(
-            fn=clear_all_and_replot,
-            inputs=[
-                last_results,
-                label_mode,
-                show_boxes,
-                show_masks,
-                show_polygons,
-                show_points,
-                show_confidence,
-                polygon_simplify,
-                simplify_eps_coeff,
-                input_type,
-            ],
-            outputs=[class_selector, class_filter_query, output_gallery],
+            fn=clear_all_action,
+            inputs=[],
+            outputs=[selected_classes_global, class_selector, class_filter_query],
         )
 
 
@@ -953,7 +1000,7 @@ def app():
             fn=export_json_click,
             inputs=[
                 last_results,
-                class_selector,
+                selected_classes_global,
                 image_meta_state,
                 polygon_simplify,
                 simplify_eps_coeff,
