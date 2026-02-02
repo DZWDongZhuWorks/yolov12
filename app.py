@@ -593,6 +593,12 @@ def app():
             max_hole_area_in,
             class_filter_in,
         ):
+            if isinstance(class_filter_in, (list, tuple, set)):
+                class_filter_snapshot = list(class_filter_in)
+            elif class_filter_in is None:
+                class_filter_snapshot = None
+            else:
+                class_filter_snapshot = str(class_filter_in)
             if steps is None:
                 rows = []
             elif hasattr(steps, "tolist"):
@@ -610,7 +616,7 @@ def app():
                     blur_threshold_in,
                     min_component_area_in,
                     max_hole_area_in,
-                    class_filter_in,
+                    class_filter_snapshot,
                 ]
             )
             return rows
