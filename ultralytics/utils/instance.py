@@ -322,6 +322,8 @@ class Instances:
         else:
             self.bboxes[:, 1] = h - self.bboxes[:, 1]
         self.segments[..., 1] = h - self.segments[..., 1]
+        if self.segments.shape[1] == 4:  # OBB directional swap (Top <-> Bottom)
+            self.segments = self.segments[:, [3, 2, 1, 0], :]
         if self.keypoints is not None:
             self.keypoints[..., 1] = h - self.keypoints[..., 1]
 
@@ -335,6 +337,8 @@ class Instances:
         else:
             self.bboxes[:, 0] = w - self.bboxes[:, 0]
         self.segments[..., 0] = w - self.segments[..., 0]
+        if self.segments.shape[1] == 4:  # OBB directional swap (Left <-> Right)
+            self.segments = self.segments[:, [1, 0, 3, 2], :]
         if self.keypoints is not None:
             self.keypoints[..., 0] = w - self.keypoints[..., 0]
 

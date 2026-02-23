@@ -542,15 +542,34 @@ def xyxyxyxy2xywhr(x):
         (numpy.ndarray | torch.Tensor): Converted data in [cx, cy, w, h, rotation] format of shape (n, 5).
     """
     is_torch = isinstance(x, torch.Tensor)
-    points = x.cpu().numpy() if is_torch else x
-    points = points.reshape(len(x), -1, 2)
-    rboxes = []
-    for pts in points:
-        # NOTE: Use cv2.minAreaRect to get accurate xywhr,
-        # especially some objects are cut off by augmentations in dataloader.
-        (cx, cy), (w, h), angle = cv2.minAreaRect(pts)
-        rboxes.append([cx, cy, w, h, angle / 180 * np.pi])
-    return torch.tensor(rboxes, device=x.device, dtype=x.dtype) if is_torch else np.asarray(rboxes)
+    if is_torch:
+        if x.numel() == 0:
+            return torch.empty((0, 5), device=x.device, dtype=x.dtype)
+        points = x.view(-1, 4, 2)
+        ctr = points.mean(1)
+        front_mid = (points[:, 0] + points[:, 1]) / 2
+        vec = front_mid - ctr
+        angle = torch.atan2(vec[:, 1], vec[:, 0])
+        rear_mid = (points[:, 2] + points[:, 3]) / 2
+        w = torch.norm(front_mid - rear_mid, dim=1)
+        left_mid = (points[:, 0] + points[:, 3]) / 2
+        right_mid = (points[:, 1] + points[:, 2]) / 2
+        h = torch.norm(left_mid - right_mid, dim=1)
+        return torch.stack([ctr[:, 0], ctr[:, 1], w, h, angle], dim=-1)
+    else:
+        points = np.asarray(x).reshape(-1, 4, 2)
+        if points.size == 0:
+            return np.empty((0, 5), dtype=np.float32)
+        ctr = points.mean(1)
+        front_mid = (points[:, 0] + points[:, 1]) / 2
+        vec = front_mid - ctr
+        angle = np.arctan2(vec[:, 1], vec[:, 0])
+        rear_mid = (points[:, 2] + points[:, 3]) / 2
+        w = np.linalg.norm(front_mid - rear_mid, axis=1)
+        left_mid = (points[:, 0] + points[:, 3]) / 2
+        right_mid = (points[:, 1] + points[:, 2]) / 2
+        h = np.linalg.norm(left_mid - right_mid, axis=1)
+        return np.stack([ctr[:, 0], ctr[:, 1], w, h, angle], axis=-1)
 
 
 def xywhr2xyxyxyxy(x):
@@ -783,11 +802,8 @@ def regularize_rboxes(rboxes):
         (torch.Tensor): The regularized boxes.
     """
     x, y, w, h, t = rboxes.unbind(dim=-1)
-    # Swap edge and angle if h >= w
-    w_ = torch.where(w > h, w, h)
-    h_ = torch.where(w > h, h, w)
-    t = torch.where(w > h, t, t + math.pi / 2) % math.pi
-    return torch.stack([x, y, w_, h_, t], dim=-1)  # regularized boxes
+    t = t % (2 * math.pi)
+    return torch.stack([x, y, w, h, t], dim=-1)  # regularized boxes
 
 
 def masks2segments(masks, strategy="all"):

@@ -3,3 +3,4 @@ satellite
 *.pyc
 *.pt
 model_choices.json
+runs

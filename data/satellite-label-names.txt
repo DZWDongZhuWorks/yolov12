@@ -39,3 +39,4 @@ parking_grid-small_car
 parking_grid-large_car
 diagonal arrow
 visual rumble strips
+turn arrow

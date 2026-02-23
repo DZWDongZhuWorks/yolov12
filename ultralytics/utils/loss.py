@@ -126,6 +126,13 @@ class RotatedBboxLoss(BboxLoss):
         iou = probiou(pred_bboxes[fg_mask], target_bboxes[fg_mask])
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
+        # Directional Angle Loss (360-degree distinction)
+        # ProbIoU is 180-degree symmetric; this term penalizes 180-degree flips.
+        p_angle = pred_bboxes[fg_mask][..., 4]
+        t_angle = target_bboxes[fg_mask][..., 4]
+        loss_angle = (1.0 - torch.cos(p_angle - t_angle)) * weight.squeeze(-1)
+        loss_iou += loss_angle.sum() / target_scores_sum
+
         # DFL loss
         if self.dfl_loss:
             target_ltrb = bbox2dist(anchor_points, xywh2xyxy(target_bboxes[..., :4]), self.dfl_loss.reg_max - 1)
