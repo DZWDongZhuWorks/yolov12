@@ -188,7 +188,7 @@ def app():
                     type="array",
                 )
                 polygon_simplify = gr.Radio(
-                    choices=["none", "convex_hull", "rdp"],
+                    choices=["none", "convex_hull", "rdp", "visvalingam_whyatt"],
                     value="rdp",
                     label="Polygon Simplify Mode",
                 )

@@ -6,13 +6,74 @@ import cv2
 DEFAULT_SIMPLIFY_EPS_RATIO = 0.01
 
 
+def _triangle_area2(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """
+    回傳三角形面積的兩倍（避免不必要的 sqrt），用於 Visvalingam-Whyatt。
+    """
+    return float(abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])))
+
+
+def _visvalingam_whyatt_open(points: np.ndarray, threshold_area2: float) -> np.ndarray:
+    """
+    對開放折線套用 Visvalingam-Whyatt。
+    首尾點固定保留。
+    """
+    pts = [p.copy() for p in points]
+    if len(pts) <= 3 or threshold_area2 <= 0:
+        return np.asarray(pts, dtype=np.float32)
+
+    while len(pts) > 3:
+        min_idx = -1
+        min_area2 = float("inf")
+        for i in range(1, len(pts) - 1):
+            area2 = _triangle_area2(pts[i - 1], pts[i], pts[i + 1])
+            if area2 < min_area2:
+                min_area2 = area2
+                min_idx = i
+
+        if min_area2 > threshold_area2 or min_idx < 0:
+            break
+
+        pts.pop(min_idx)
+
+    return np.asarray(pts, dtype=np.float32)
+
+
+def _visvalingam_whyatt_closed(seg: np.ndarray, eps_coeff: float) -> np.ndarray:
+    """
+    對封閉 polygon ring（不含重複結尾點）套用 Visvalingam-Whyatt。
+    """
+    n = seg.shape[0]
+    if n <= 3:
+        return seg
+
+    x_min, y_min = seg.min(axis=0)
+    x_max, y_max = seg.max(axis=0)
+    size = max(x_max - x_min, y_max - y_min)
+    threshold_area2 = (float(size) * DEFAULT_SIMPLIFY_EPS_RATIO * eps_coeff) ** 2
+
+    # 把 ring 轉成開放折線（在尾端附加首點）再簡化，最後去掉附加點
+    open_pts = np.vstack([seg, seg[0:1]])
+    simplified_open = _visvalingam_whyatt_open(open_pts, threshold_area2)
+
+    # 最少保留 3 點（不含結尾重複點）
+    if simplified_open.shape[0] <= 4:
+        core = simplified_open[:-1]
+        if core.shape[0] < 3:
+            return seg
+        return core
+
+    return simplified_open[:-1]
+
+
 def _simplify_segment(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarray:
     """
     seg: (N, 2) float32
     mode:
-      - "none"        : 不做簡化
-      - "convex_hull" : 取凸包
-      - "rdp"         : 用 approxPolyDP 做 RDP 簡化
+      - "none"               : 不做簡化
+      - "convex_hull"        : 取凸包
+      - "rdp"                : 用 approxPolyDP 做 RDP 簡化
+      - "visvalingam_whyatt" : 用 Visvalingam-Whyatt 依面積簡化
     eps_coeff: eps 係數（會乘上預設比例）
     """
     if seg.shape[0] <= 3 or mode == "none":
@@ -21,6 +82,9 @@ def _simplify_segment(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarra
     if mode == "convex_hull":
         hull = cv2.convexHull(seg)
         return hull.reshape(-1, 2)
+
+    if mode == "visvalingam_whyatt":
+        return _visvalingam_whyatt_closed(seg, eps_coeff)
 
     # rdp / approxPolyDP
     x_min, y_min = seg.min(axis=0)
@@ -48,8 +112,8 @@ def _close_ring(points: List[List[float]]) -> List[List[float]]:
 def build_objects_from_result(
     result,
     allowed_class_ids: Optional[List[int]] = None,
-    simplify_mode: str = "none",      # "none" / "convex_hull" / "rdp"
-    simplify_eps_coeff: float = 1.0, # 只對 "rdp" 有效
+    simplify_mode: str = "none",      # "none" / "convex_hull" / "rdp" / "visvalingam_whyatt"
+    simplify_eps_coeff: float = 1.0, # 對 "rdp" / "visvalingam_whyatt" 有效
 ) -> List[Dict[str, Any]]:
     """
     從單一個 YOLO result 產生標準化的物件資訊（含 polygon）。
