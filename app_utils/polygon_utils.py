@@ -96,6 +96,27 @@ def _simplify_segment(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarra
     return approx.reshape(-1, 2)
 
 
+def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
+    if seg.shape[0] <= 3 or not steps:
+        return seg
+
+    out = seg
+    for step in steps:
+        name = str(step.get("name", "")).strip().lower()
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt"}:
+            continue
+        class_filter = step.get("class_filter")
+        if class_filter is not None and class_id not in class_filter:
+            continue
+        count = max(1, int(step.get("count", 1)))
+        eps_coeff = float(step.get("eps_coeff", 1.0))
+        for _ in range(count):
+            out = _simplify_segment(out, name, eps_coeff)
+            if out.shape[0] <= 3:
+                break
+    return out
+
+
 def _close_ring(points: List[List[float]]) -> List[List[float]]:
     """
     確保 polygon ring 首尾相同（GeoJSON 需要閉合 ring）。
@@ -114,12 +135,39 @@ def build_objects_from_result(
     allowed_class_ids: Optional[List[int]] = None,
     simplify_mode: str = "none",      # "none" / "convex_hull" / "rdp" / "visvalingam_whyatt"
     simplify_eps_coeff: float = 1.0, # 對 "rdp" / "visvalingam_whyatt" 有效
+    polygon_opt_steps: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """
     從單一個 YOLO result 產生標準化的物件資訊（含 polygon）。
     之後畫面繪製 & JSON 輸出都只用這個。
     """
     names = getattr(result, "names", {}) or {}
+
+    resolved_polygon_steps: List[Dict[str, Any]] = []
+    if polygon_opt_steps:
+        name_to_id = {str(name).lower(): int(idx) for idx, name in (names or {}).items()}
+        for step in polygon_opt_steps:
+            class_tokens = step.get("classes")
+            class_filter = None
+            if class_tokens:
+                resolved = set()
+                for token in class_tokens:
+                    if isinstance(token, (int, np.integer)):
+                        resolved.add(int(token))
+                        continue
+                    token_str = str(token).strip()
+                    if not token_str:
+                        continue
+                    try:
+                        resolved.add(int(token_str))
+                        continue
+                    except Exception:
+                        pass
+                    matched = name_to_id.get(token_str.lower())
+                    if matched is not None:
+                        resolved.add(matched)
+                class_filter = resolved or None
+            resolved_polygon_steps.append({**step, "class_filter": class_filter})
 
     if not hasattr(result, "boxes") or result.boxes is None or len(result.boxes) == 0:
         return []
@@ -166,6 +214,7 @@ def build_objects_from_result(
                     continue
 
                 arr = _simplify_segment(arr, simplify_mode, simplify_eps_coeff)
+                arr = _apply_polygon_steps(arr, resolved_polygon_steps, int(cid))
                 polys.append(_close_ring(arr.astype(float).tolist()))
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon

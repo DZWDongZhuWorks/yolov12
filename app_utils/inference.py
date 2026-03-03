@@ -130,6 +130,7 @@ def annotate_from_results(
     simplify_mode: str,
     simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]] = None,
+    polygon_opt_steps=None,
 ):
     """
     使用 Ultralytics 的 plot 畫基礎層（bbox / mask），
@@ -150,6 +151,7 @@ def annotate_from_results(
         allowed_class_ids=allowed_class_ids,
         simplify_mode=simplify_mode,
         simplify_eps_coeff=simplify_eps_coeff,
+        polygon_opt_steps=polygon_opt_steps,
     )
     
     # ---- 先畫 polygon 邊界（如果有 mask） ----
@@ -522,6 +524,85 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
     return steps
 
 
+DEFAULT_POLYGON_EPS_COEFF = 1.0
+
+
+def _build_polygon_step(name: str, count: int, eps_coeff: float = DEFAULT_POLYGON_EPS_COEFF, classes=None) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "count": max(1, int(count)),
+        "eps_coeff": _coerce_float(eps_coeff, DEFAULT_POLYGON_EPS_COEFF),
+        "classes": _normalize_class_filter(classes),
+    }
+
+
+def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
+    if steps_input is None:
+        return []
+
+    if hasattr(steps_input, "empty"):
+        if steps_input.empty:
+            return []
+    elif not steps_input:
+        return []
+
+    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt"}
+    steps: List[Dict[str, Any]] = []
+
+    if isinstance(steps_input, str):
+        raw_parts = []
+        for part in steps_input.replace("\n", ",").split(","):
+            cleaned = part.strip()
+            if cleaned:
+                raw_parts.append(cleaned)
+
+        for item in raw_parts:
+            chunks = [p.strip() for p in item.split(":") if p.strip()]
+            if not chunks:
+                continue
+            name = chunks[0].lower()
+            if name not in valid_names:
+                continue
+            count = _coerce_int(chunks[1] if len(chunks) > 1 else 1, 1)
+            if count <= 0:
+                continue
+            eps_coeff = _coerce_float(chunks[2] if len(chunks) > 2 else DEFAULT_POLYGON_EPS_COEFF, DEFAULT_POLYGON_EPS_COEFF)
+            steps.append(_build_polygon_step(name=name, count=count, eps_coeff=eps_coeff))
+        return steps
+
+    iterable = steps_input
+    if hasattr(steps_input, "values") and hasattr(steps_input, "tolist"):
+        try:
+            iterable = steps_input.values.tolist()
+        except Exception:
+            pass
+
+    try:
+        for row in iterable:
+            if not row or len(row) < 1:
+                continue
+            name = str(row[0]).strip().lower()
+            if name not in valid_names:
+                continue
+            count = _coerce_int(row[1] if len(row) > 1 else 1, 1)
+            if count <= 0:
+                continue
+            eps_coeff = row[2] if len(row) > 2 else DEFAULT_POLYGON_EPS_COEFF
+            classes = row[3] if len(row) > 3 else None
+            steps.append(
+                _build_polygon_step(
+                    name=name,
+                    count=count,
+                    eps_coeff=eps_coeff,
+                    classes=classes,
+                )
+            )
+    except Exception:
+        return []
+
+    return steps
+
+
 def _ensure_odd(value: int) -> int:
     if value <= 1:
         return 1
@@ -778,6 +859,7 @@ def infer_image_single(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
+    polygon_opt_steps,
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
@@ -796,6 +878,7 @@ def infer_image_single(
         simplify_mode,
         simplify_eps_coeff,
         allowed_class_ids,
+        polygon_opt_steps,
     )
     # Gradio Image 用 RGB
     return annotated_bgr[:, :, ::-1], results  # (RGB, results)
@@ -815,6 +898,7 @@ def infer_video_single(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
+    polygon_opt_steps,
     allowed_class_ids: Optional[List[int]],
     mask_opt_enabled: bool,
     mask_opt_steps,
@@ -864,6 +948,7 @@ def infer_video_single(
             simplify_mode,
             simplify_eps_coeff,
             allowed_class_ids,
+            polygon_opt_steps,
         )
         out.write(annotated_bgr)
         pbar.update(1)
@@ -888,6 +973,7 @@ def yolov12_multi_inference_image(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
+    polygon_opt_steps,
     allowed_class_ids: Optional[List[int]],
 ):
     """
@@ -911,11 +997,12 @@ def yolov12_multi_inference_image(
             show_masks,
             show_polygons,
             show_points,
-            show_confidence,
-            simplify_mode,
-            simplify_eps_coeff,
-            allowed_class_ids,
-        )
+                show_confidence,
+                simplify_mode,
+                simplify_eps_coeff,
+                polygon_opt_steps,
+                allowed_class_ids,
+            )
         gallery_items.append((img_rgb, mid))
         results_cache[mid] = results
 
@@ -936,6 +1023,7 @@ def yolov12_multi_inference_video(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
+    polygon_opt_steps,
     allowed_class_ids: Optional[List[int]],
     mask_opt_enabled: bool,
     mask_opt_steps,
@@ -963,11 +1051,12 @@ def yolov12_multi_inference_video(
             show_masks,
             show_polygons,
             show_points,
-            show_confidence,
-            simplify_mode,
-            simplify_eps_coeff,
-            allowed_class_ids,
-            mask_opt_enabled,
+                show_confidence,
+                simplify_mode,
+                simplify_eps_coeff,
+                polygon_opt_steps,
+                allowed_class_ids,
+                mask_opt_enabled,
             mask_opt_steps,
         )
         outs.append((mid, out_path))
@@ -1011,6 +1100,7 @@ def yolov12_inference_for_examples(
         True,   # show_confidence
         "rdp",
         1.0,
+        [],
         allowed_class_ids=None,
     )
     return gallery
