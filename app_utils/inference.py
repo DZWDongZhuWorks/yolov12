@@ -354,14 +354,18 @@ def _normalize_class_filter(raw_value) -> Optional[List[object]]:
     if raw_value is None:
         return None
     if isinstance(raw_value, (list, tuple, set)):
+        if len(raw_value) == 0:
+            return []
         tokens = [t for t in raw_value if t not in (None, "")]
     else:
         text = str(raw_value).strip()
-        if not text or text.lower() in {"all", "*", "any"}:
+        if text.lower() in {"all", "*", "any"}:
             return None
+        if not text:
+            return []
         tokens = [t.strip() for t in text.replace("\n", ",").split(",") if t.strip()]
     if not tokens:
-        return None
+        return []
     normalized: List[object] = []
     for token in tokens:
         if isinstance(token, (int, np.integer)):
@@ -383,8 +387,10 @@ def _normalize_class_filter(raw_value) -> Optional[List[object]]:
 
 
 def _resolve_class_filter(class_filter: Optional[List[object]], names: Dict[int, str]) -> Optional[Set[int]]:
-    if not class_filter:
+    if class_filter is None:
         return None
+    if len(class_filter) == 0:
+        return set()
     name_to_id = {str(name).lower(): int(idx) for idx, name in (names or {}).items()}
     resolved: Set[int] = set()
     for token in class_filter:

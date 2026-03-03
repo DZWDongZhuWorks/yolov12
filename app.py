@@ -188,19 +188,7 @@ def app():
                     label="Mask 優化流程",
                     type="array",
                 )
-                polygon_simplify = gr.Radio(
-                    choices=["none", "convex_hull", "rdp", "visvalingam_whyatt"],
-                    value="rdp",
-                    label="Polygon Simplify Mode",
-                )
-                simplify_eps_coeff = gr.Slider(
-                    label="Polygon Simplify Epsilon Coefficient (Base ratio 0.01)",
-                    minimum=0.1,
-                    maximum=5.0,
-                    step=0.1,
-                    value=1.0,
-                )
-                gr.Markdown("### Polygon 優化（在 Polygon Simplify 後套用）")
+                gr.Markdown("### Polygon 優化")
                 polygon_opt_enable = gr.Checkbox(value=False, label="啟用 Polygon 優化")
                 with gr.Row():
                     polygon_opt_method = gr.Dropdown(
@@ -342,8 +330,6 @@ def app():
             mask_opt_steps_in,
             polygon_opt_enable_in,
             polygon_opt_steps_in,
-            simplify_mode_in,
-            simplify_eps_coeff_in,
             saved_models_in,
             class_selected_items_in,
             class_choices_in,
@@ -369,10 +355,11 @@ def app():
                     class_choices_in or [],  # class_choices_state
                     None,  # image_meta_state
                     gr.update(choices=class_choices_in or [], value=[]),  # step_class_filter
+                    gr.update(choices=class_choices_in or [], value=[]),  # polygon_step_class_filter
                     gr.update(value=""),
                     gr.update(value=""),
-                    gr.update(),
-                    gr.update(),
+                    gr.update(value=[]),
+                    gr.update(value=[]),
                     gr.update(value=[]),
                 )
 
@@ -403,10 +390,11 @@ def app():
                         class_choices_in or [],
                         None,
                         gr.update(choices=class_choices_in or [], value=[]),
+                        gr.update(choices=class_choices_in or [], value=[]),
                         gr.update(value=""),
                         gr.update(value=""),
-                        gr.update(),
-                        gr.update(),
+                        gr.update(value=[]),
+                        gr.update(value=[]),
                         gr.update(value=[]),
                     )
 
@@ -423,8 +411,8 @@ def app():
                     show_polygons_in, 
                     show_points_in,
                     show_conf_in,
-                    simplify_mode_in,
-                    simplify_eps_coeff_in,
+                    "none",
+                    1.0,
                     polygon_steps,
                     allowed_class_ids=allowed_ids,
                 )
@@ -448,8 +436,8 @@ def app():
                             show_polygons_in,
                             show_points_in,
                             show_conf_in,
-                            simplify_mode_in,
-                            simplify_eps_coeff_in,
+                            "none",
+                            1.0,
                             allowed_ids,
                             polygon_steps,
                         )
@@ -483,7 +471,11 @@ def app():
                 )
                 step_class_filter_update = gr.update(
                     choices=class_choices_new,
-                    value=[],
+                    value=class_choices_new,
+                )
+                polygon_step_class_filter_update = gr.update(
+                    choices=class_choices_new,
+                    value=class_choices_new,
                 )
                 class_filter_query_update = gr.update(value="")
                 step_filter_query_update = gr.update(value="")
@@ -539,11 +531,12 @@ def app():
                     class_choices_new,
                     image_meta,  # image_meta_state
                     step_class_filter_update,
+                    polygon_step_class_filter_update,
                     class_filter_query_update,
                     step_filter_query_update,
                     gr.update(value=class_selected_items_out),  # Update Global Selection
-                    gr.update(value=[]), # Update Step Global Selection
-                    gr.update(value=[]), # Update Polygon Step Global Selection
+                    gr.update(value=class_choices_new), # Update Step Global Selection
+                    gr.update(value=class_choices_new), # Update Polygon Step Global Selection
                 )
 
             # 5) Video 模式
@@ -559,6 +552,7 @@ def app():
                         gr.update(),  # class_selector
                         class_choices_in or [],
                         None,
+                        gr.update(choices=class_choices_in or [], value=[]),
                         gr.update(choices=class_choices_in or [], value=[]),
                         gr.update(value=""),
                         gr.update(value=""),
@@ -579,8 +573,8 @@ def app():
                     show_polygons_in, 
                     show_points_in,
                     show_conf_in,
-                    simplify_mode_in,
-                    simplify_eps_coeff_in,
+                    "none",
+                    1.0,
                     polygon_steps,
                     allowed_class_ids=allowed_ids,
                     mask_opt_enabled=mask_opt_enable_in,
@@ -605,6 +599,7 @@ def app():
                     gr.update(),  # class_selector：維持原樣
                     class_choices_in or [],
                     None,  # image_meta_state（影片無需）
+                    gr.update(choices=class_choices_in or [], value=[]),
                     gr.update(choices=class_choices_in or [], value=[]),
                     gr.update(value=""),
                     gr.update(value=""),
@@ -633,8 +628,6 @@ def app():
                 mask_opt_steps,
                 polygon_opt_enable,
                 polygon_opt_steps,
-                polygon_simplify,
-                simplify_eps_coeff,
                 saved_models_state,
                 class_selector,
                 class_choices_state,
@@ -654,6 +647,7 @@ def app():
                 class_choices_state,
                 image_meta_state,
                 step_class_filter,
+                polygon_step_class_filter,
                 class_filter_query,
                 step_class_filter_query,
                 selected_classes_global,      # NEW output
@@ -740,12 +734,12 @@ def app():
             
             return (
                 gr.update(choices=choices, value=choices),        # class_selector (default all)
-                gr.update(choices=choices, value=[]),             # step_class_filter
-                gr.update(choices=choices, value=[]),             # polygon_step_class_filter
+                gr.update(choices=choices, value=choices),        # step_class_filter
+                gr.update(choices=choices, value=choices),        # polygon_step_class_filter
                 choices,                                          # class_choices_state
                 choices,                                          # selected_classes_global (default all)
-                [],                                               # step_selected_classes_global
-                [],                                               # polygon_step_selected_classes_global
+                choices,                                          # step_selected_classes_global
+                choices,                                          # polygon_step_selected_classes_global
             )
         
         load_model_btn.click(
@@ -931,8 +925,6 @@ def app():
             show_polygons_in,
             show_points_in,
             show_conf_in,
-            simplify_mode_in,
-            simplify_eps_coeff_in,
             polygon_opt_enable_in,
             polygon_opt_steps_in,
             input_type_in,
@@ -961,8 +953,8 @@ def app():
                     show_polygons_in,
                     show_points_in,
                     show_conf_in,
-                    simplify_mode_in,
-                    simplify_eps_coeff_in,
+                    "none",
+                    1.0,
                     allowed_ids,
                     polygon_steps,
                 )
@@ -978,8 +970,6 @@ def app():
             show_polygons,
             show_points,
             show_confidence,
-            polygon_simplify,
-            simplify_eps_coeff,
             polygon_opt_enable,
             polygon_opt_steps,
         ):
@@ -993,8 +983,6 @@ def app():
                     show_polygons,
                     show_points,
                     show_confidence,
-                    polygon_simplify,
-                    simplify_eps_coeff,
                     polygon_opt_enable,
                     polygon_opt_steps,
                     input_type,
@@ -1014,8 +1002,6 @@ def app():
                 show_polygons,
                 show_points,
                 show_confidence,
-                polygon_simplify,
-                simplify_eps_coeff,
                 polygon_opt_enable,
                 polygon_opt_steps,
                 input_type,
@@ -1034,8 +1020,6 @@ def app():
             show_polygons_in,
             show_points_in,
             show_conf_in,
-            simplify_mode_in,
-            simplify_eps_coeff_in,
             polygon_opt_enable_in,
             polygon_opt_steps_in,
             input_type_in,
@@ -1058,8 +1042,6 @@ def app():
                 show_polygons_in,
                 show_points_in,
                 show_conf_in,
-                simplify_mode_in,
-                simplify_eps_coeff_in,
                 polygon_opt_enable_in,
                 polygon_opt_steps_in,
                 input_type_in,
@@ -1085,8 +1067,6 @@ def app():
                     show_polygons,
                     show_points,
                     show_confidence,
-                    polygon_simplify,
-                    simplify_eps_coeff,
                     polygon_opt_enable,
                     polygon_opt_steps,
                     input_type,
@@ -1125,8 +1105,6 @@ def app():
             last_results_dict,
             class_selected_items_in,
             image_meta,
-            simplify_mode_in,
-            simplify_eps_coeff_in,
             polygon_opt_enable_in,
             polygon_opt_steps_in,
         ):
@@ -1147,8 +1125,8 @@ def app():
                 image_info=image_meta,
                 out_dir=None,
                 allowed_class_ids=allowed_ids,
-                simplify_mode=simplify_mode_in,
-                simplify_eps_coeff=simplify_eps_coeff_in,
+                simplify_mode="none",
+                simplify_eps_coeff=1.0,
                 polygon_opt_steps=parse_polygon_steps(polygon_opt_steps_in) if polygon_opt_enable_in else [],
             )
             return files
@@ -1159,8 +1137,6 @@ def app():
                 last_results,
                 selected_classes_global,
                 image_meta_state,
-                polygon_simplify,
-                simplify_eps_coeff,
                 polygon_opt_enable,
                 polygon_opt_steps,
             ],

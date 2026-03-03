@@ -149,24 +149,27 @@ def build_objects_from_result(
         for step in polygon_opt_steps:
             class_tokens = step.get("classes")
             class_filter = None
-            if class_tokens:
-                resolved = set()
-                for token in class_tokens:
-                    if isinstance(token, (int, np.integer)):
-                        resolved.add(int(token))
-                        continue
-                    token_str = str(token).strip()
-                    if not token_str:
-                        continue
-                    try:
-                        resolved.add(int(token_str))
-                        continue
-                    except Exception:
-                        pass
-                    matched = name_to_id.get(token_str.lower())
-                    if matched is not None:
-                        resolved.add(matched)
-                class_filter = resolved or None
+            if class_tokens is not None:
+                if len(class_tokens) == 0:
+                    class_filter = set()
+                else:
+                    resolved = set()
+                    for token in class_tokens:
+                        if isinstance(token, (int, np.integer)):
+                            resolved.add(int(token))
+                            continue
+                        token_str = str(token).strip()
+                        if not token_str:
+                            continue
+                        try:
+                            resolved.add(int(token_str))
+                            continue
+                        except Exception:
+                            pass
+                        matched = name_to_id.get(token_str.lower())
+                        if matched is not None:
+                            resolved.add(matched)
+                    class_filter = resolved or set()
             resolved_polygon_steps.append({**step, "class_filter": class_filter})
 
     if not hasattr(result, "boxes") or result.boxes is None or len(result.boxes) == 0:
