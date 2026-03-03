@@ -21,12 +21,30 @@ from app_utils.export_utils import export_results_cache
 
 def app():
     app_css = """
+    /* Keep row items top-aligned so sticky column behaves predictably */
+    .gradio-container .gr-row {
+        align-items: flex-start;
+        overflow: visible;
+    }
+
+    /* Sticky result column */
     #result-panel {
+        position: -webkit-sticky;
         position: sticky;
-        top: 12px;
+        top: 10px;
         align-self: flex-start;
-        max-height: calc(100vh - 24px);
-        overflow: auto;
+        max-height: calc(100vh - 20px);
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+
+    /* On narrow screens, disable sticky to avoid cramped layout */
+    @media (max-width: 1024px) {
+        #result-panel {
+            position: static;
+            max-height: none;
+            overflow: visible;
+        }
     }
     """
 
