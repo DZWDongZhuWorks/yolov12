@@ -187,10 +187,56 @@ def app():
                     label="Mask 優化流程",
                     type="array",
                 )
+                gr.Markdown("### Polygon 優化")
+                polygon_opt_enable = gr.Checkbox(value=False, label="啟用 Polygon 優化流程")
+                with gr.Row():
+                    polygon_opt_method = gr.Dropdown(
+                        label="新增步驟",
+                        choices=["convex_hull", "rdp", "visvalingam_whyatt"],
+                        value="rdp",
+                    )
+                    polygon_opt_count = gr.Slider(
+                        label="次數",
+                        minimum=1,
+                        maximum=10,
+                        step=1,
+                        value=1,
+                    )
+                    polygon_opt_eps = gr.Slider(
+                        label="Epsilon Coefficient",
+                        minimum=0.1,
+                        maximum=5.0,
+                        step=0.1,
+                        value=1.0,
+                    )
+                    polygon_opt_add = gr.Button(value="加入步驟", variant="secondary")
+                polygon_step_class_filter_query = gr.Textbox(
+                    label="類別查詢",
+                    placeholder="輸入關鍵字或 class id",
+                )
+                with gr.Accordion("Polygon 套用 Classes（不選=全部）", open=False):
+                    polygon_step_class_filter = gr.CheckboxGroup(
+                        label="套用 Classes（不選=全部）",
+                        choices=[],
+                        value=[],
+                    )
+                    with gr.Row():
+                        polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
+                        polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                gr.Markdown("可直接編輯下表調整 polygon 流程順序、次數、參數與生效類別。")
+                polygon_opt_steps = gr.Dataframe(
+                    headers=["step", "count", "eps_coeff", "classes"],
+                    datatype=["str", "number", "number", "str"],
+                    row_count=0,
+                    col_count=(4, "fixed"),
+                    wrap=True,
+                    label="Polygon 優化流程",
+                    type="array",
+                )
                 polygon_simplify = gr.Radio(
                     choices=["none", "convex_hull", "rdp", "visvalingam_whyatt"],
                     value="rdp",
-                    label="Polygon Simplify Mode",
+                    label="Polygon Simplify Mode（未啟用流程時生效）",
                 )
                 simplify_eps_coeff = gr.Slider(
                     label="Polygon Simplify Epsilon Coefficient (Base ratio 0.01)",
@@ -234,6 +280,7 @@ def app():
                 # Global Selection State (To persist selection even when filtered)
                 selected_classes_global = gr.State(value=[])
                 step_selected_classes_global = gr.State(value=[])
+                polygon_step_selected_classes_global = gr.State(value=[])
 
             # ======================= 右側：輸出 =======================
             with gr.Column():
@@ -290,6 +337,8 @@ def app():
             show_conf_in,
             mask_opt_enable_in,
             mask_opt_steps_in,
+            polygon_opt_enable_in,
+            polygon_opt_steps_in,
             simplify_mode_in,
             simplify_eps_coeff_in,
             saved_models_in,
@@ -318,6 +367,7 @@ def app():
                     gr.update(choices=class_choices_in or [], value=[]),  # step_class_filter
                     gr.update(value=""),
                     gr.update(value=""),
+                    gr.update(),
                 )
 
             # 2) 持久化自訂模型選項
@@ -349,6 +399,7 @@ def app():
                         gr.update(choices=class_choices_in or [], value=[]),
                         gr.update(value=""),
                         gr.update(value=""),
+                        gr.update(),
                     )
 
                 # 4-1) 多模型推論
@@ -366,6 +417,8 @@ def app():
                     show_conf_in,
                     simplify_mode_in,
                     simplify_eps_coeff_in,
+                    polygon_opt_enable_in,
+                    polygon_opt_steps_in,
                     allowed_class_ids=allowed_ids,
                 )
 
@@ -390,6 +443,8 @@ def app():
                             show_conf_in,
                             simplify_mode_in,
                             simplify_eps_coeff_in,
+                            polygon_opt_enable_in,
+                            polygon_opt_steps_in,
                             allowed_ids,
                         )
                         gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
@@ -482,6 +537,7 @@ def app():
                     step_filter_query_update,
                     gr.update(value=class_selected_items_out),  # Update Global Selection
                     gr.update(value=[]), # Update Step Global Selection
+                    gr.update(value=[]), # Update Polygon Step Global Selection
                 )
 
             # 5) Video 模式
@@ -502,6 +558,7 @@ def app():
                         gr.update(value=""),
                         gr.update(),  # selected_classes_global
                         gr.update(),  # step_selected_classes_global
+                        gr.update(),  # polygon_step_selected_classes_global
                     )
 
                 outs = yolov12_multi_inference_video(
@@ -518,6 +575,8 @@ def app():
                     show_conf_in,
                     simplify_mode_in,
                     simplify_eps_coeff_in,
+                    polygon_opt_enable_in,
+                    polygon_opt_steps_in,
                     allowed_class_ids=allowed_ids,
                     mask_opt_enabled=mask_opt_enable_in,
                     mask_opt_steps=mask_opt_steps_in,
@@ -546,6 +605,7 @@ def app():
                     gr.update(value=""),
                     gr.update(),  # selected_classes_global (維持原樣)
                     gr.update(),  # step_selected_classes_global (維持原樣)
+                    gr.update(),  # polygon_step_selected_classes_global (維持原樣)
                 )
 
         yolov12_infer.click(
@@ -566,6 +626,8 @@ def app():
                 show_confidence,
                 mask_opt_enable,
                 mask_opt_steps,
+                polygon_opt_enable,
+                polygon_opt_steps,
                 polygon_simplify,
                 simplify_eps_coeff,
                 saved_models_state,
@@ -591,6 +653,7 @@ def app():
                 step_class_filter_query,
                 selected_classes_global,      # NEW output
                 step_selected_classes_global, # NEW output
+                polygon_step_selected_classes_global,
             ],
         )
 
@@ -653,9 +716,11 @@ def app():
                 return (
                     gr.update(choices=[], value=[]), # class_selector
                     gr.update(choices=[], value=[]), # step_class_filter
+                    gr.update(choices=[], value=[]), # polygon_step_class_filter
                     [], # class_choices_state
                     [], # selected_classes_global
                     [], # step_selected_classes_global
+                    [], # polygon_step_selected_classes_global
                 )
             
             # 使用第一個模型來獲取 class list
@@ -663,7 +728,7 @@ def app():
             names = get_model_names(mid)
             if not names:
                 return (
-                    gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+                    gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
                 )
             
             choices, _ = names_to_choice_list(names)
@@ -671,9 +736,11 @@ def app():
             return (
                 gr.update(choices=choices, value=choices),        # class_selector (default all)
                 gr.update(choices=choices, value=[]),             # step_class_filter
+                gr.update(choices=choices, value=[]),             # polygon_step_class_filter
                 choices,                                          # class_choices_state
                 choices,                                          # selected_classes_global (default all)
                 [],                                               # step_selected_classes_global
+                [],                                               # polygon_step_selected_classes_global
             )
         
         load_model_btn.click(
@@ -682,9 +749,11 @@ def app():
             outputs=[
                 class_selector,
                 step_class_filter,
+                polygon_step_class_filter,
                 class_choices_state,
                 selected_classes_global,
                 step_selected_classes_global,
+                polygon_step_selected_classes_global,
             ]
         )
         def add_mask_step(
@@ -744,6 +813,40 @@ def app():
             outputs=[mask_opt_steps],
         )
 
+
+        def add_polygon_step(steps, method, count, eps_coeff_in, class_filter_in):
+            if isinstance(class_filter_in, (list, tuple, set)):
+                valid_items = [str(x) for x in class_filter_in if x is not None]
+                class_filter_snapshot = ", ".join(valid_items)
+            elif class_filter_in is None:
+                class_filter_snapshot = None
+            else:
+                class_filter_snapshot = str(class_filter_in)
+
+            if steps is None:
+                rows = []
+            elif hasattr(steps, "tolist"):
+                rows = steps.tolist()
+            elif isinstance(steps, list):
+                rows = list(steps)
+            else:
+                rows = []
+
+            rows.append([method, int(count), float(eps_coeff_in), class_filter_snapshot])
+            return rows
+
+        polygon_opt_add.click(
+            fn=add_polygon_step,
+            inputs=[
+                polygon_opt_steps,
+                polygon_opt_method,
+                polygon_opt_count,
+                polygon_opt_eps,
+                polygon_step_class_filter,
+            ],
+            outputs=[polygon_opt_steps],
+        )
+
         
         # --- Class Filter Logic Wiring ---
         # 1. When Query Changes -> Update UI Choices & Value (Read from Global)
@@ -787,6 +890,27 @@ def app():
             inputs=[],
             outputs=[step_class_filter, step_class_filter_query],
         )
+
+        polygon_step_class_filter_query.change(
+            fn=update_class_selector_filter_and_sync,
+            inputs=[polygon_step_class_filter_query, class_choices_state, polygon_step_selected_classes_global],
+            outputs=[polygon_step_class_filter],
+        )
+        polygon_step_class_filter.change(
+            fn=on_step_class_selector_change,
+            inputs=[polygon_step_class_filter, polygon_step_class_filter_query, class_choices_state, polygon_step_selected_classes_global],
+            outputs=[polygon_step_selected_classes_global],
+        )
+        polygon_step_select_all_btn.click(
+            fn=step_select_all_classes,
+            inputs=[class_choices_state],
+            outputs=[polygon_step_class_filter, polygon_step_class_filter_query],
+        )
+        polygon_step_clear_all_btn.click(
+            fn=step_clear_all_classes,
+            inputs=[],
+            outputs=[polygon_step_class_filter, polygon_step_class_filter_query],
+        )
         def replot_all_filtered(
             last_results_dict,
             label_mode_in,
@@ -797,6 +921,8 @@ def app():
             show_conf_in,
             simplify_mode_in,
             simplify_eps_coeff_in,
+            polygon_opt_enable_in,
+            polygon_opt_steps_in,
             input_type_in,
             class_selected_items_in,
         ):
@@ -824,6 +950,8 @@ def app():
                     show_conf_in,
                     simplify_mode_in,
                     simplify_eps_coeff_in,
+                    polygon_opt_enable_in,
+                    polygon_opt_steps_in,
                     allowed_ids,
                 )
                 gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
@@ -840,6 +968,8 @@ def app():
             show_confidence,
             polygon_simplify,
             simplify_eps_coeff,
+            polygon_opt_enable,
+            polygon_opt_steps,
         ):
             ctrl.change(
                 fn=replot_all_filtered,
@@ -853,6 +983,8 @@ def app():
                     show_confidence,
                     polygon_simplify,
                     simplify_eps_coeff,
+                    polygon_opt_enable,
+                    polygon_opt_steps,
                     input_type,
                     selected_classes_global,
                 ],
@@ -872,6 +1004,8 @@ def app():
                 show_confidence,
                 polygon_simplify,
                 simplify_eps_coeff,
+                polygon_opt_enable,
+                polygon_opt_steps,
                 input_type,
                 selected_classes_global, # Use Global State
              ],
@@ -890,6 +1024,8 @@ def app():
             show_conf_in,
             simplify_mode_in,
             simplify_eps_coeff_in,
+            polygon_opt_enable_in,
+            polygon_opt_steps_in,
             input_type_in,
             class_selected_items_in,
         ):
@@ -912,6 +1048,8 @@ def app():
                 show_conf_in,
                 simplify_mode_in,
                 simplify_eps_coeff_in,
+                polygon_opt_enable_in,
+                polygon_opt_steps_in,
                 input_type_in,
                 class_selected_items_in,
             )
@@ -935,6 +1073,8 @@ def app():
                     show_confidence,
                     polygon_simplify,
                     simplify_eps_coeff,
+                    polygon_opt_enable,
+                    polygon_opt_steps,
                     input_type,
                     selected_classes_global,
                 ],
@@ -973,6 +1113,8 @@ def app():
             image_meta,
             simplify_mode_in,
             simplify_eps_coeff_in,
+            polygon_opt_enable_in,
+            polygon_opt_steps_in,
         ):
             # 僅支援影像模式（因影片逐幀 polygon 通常會很大）
             if not last_results_dict or not image_meta:
@@ -993,6 +1135,8 @@ def app():
                 allowed_class_ids=allowed_ids,
                 simplify_mode=simplify_mode_in,
                 simplify_eps_coeff=simplify_eps_coeff_in,
+                polygon_opt_enable=polygon_opt_enable_in,
+                polygon_opt_steps=polygon_opt_steps_in,
             )
             return files
 
@@ -1004,6 +1148,8 @@ def app():
                 image_meta_state,
                 polygon_simplify,
                 simplify_eps_coeff,
+                polygon_opt_enable,
+                polygon_opt_steps,
             ],
             outputs=[export_files],
         )

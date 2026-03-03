@@ -1,5 +1,5 @@
 # app_utils/polygon_utils.py
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 import numpy as np
 import cv2
 
@@ -109,17 +109,106 @@ def _close_ring(points: List[List[float]]) -> List[List[float]]:
     return points + [first]
 
 
+def _normalize_class_filter(raw) -> Optional[List[object]]:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        tokens = [part.strip() for part in raw.replace("\n", ",").split(",")]
+        normalized = [token for token in tokens if token]
+        return normalized or None
+    if isinstance(raw, (list, tuple, set)):
+        normalized = [str(item).strip() for item in raw if str(item).strip()]
+        return normalized or None
+    token = str(raw).strip()
+    return [token] if token else None
+
+
+def _resolve_class_filter(class_filter: Optional[List[object]], names: Dict[int, str]) -> Optional[Set[int]]:
+    if not class_filter:
+        return None
+    name_to_id = {str(name).lower(): int(idx) for idx, name in (names or {}).items()}
+    resolved: Set[int] = set()
+    for token in class_filter:
+        token_str = str(token).strip()
+        if not token_str:
+            continue
+        try:
+            resolved.add(int(token_str))
+            continue
+        except Exception:
+            pass
+        matched = name_to_id.get(token_str.lower())
+        if matched is not None:
+            resolved.add(matched)
+    return resolved or None
+
+
+def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
+    if steps_input is None:
+        return []
+    if hasattr(steps_input, "empty") and steps_input.empty:
+        return []
+    if not hasattr(steps_input, "empty") and not steps_input:
+        return []
+
+    valid_modes = {"convex_hull", "rdp", "visvalingam_whyatt"}
+    steps: List[Dict[str, Any]] = []
+    iterable = steps_input
+    if hasattr(steps_input, "values") and hasattr(steps_input, "tolist"):
+        try:
+            iterable = steps_input.values.tolist()
+        except Exception:
+            pass
+
+    for row in iterable:
+        if not row or len(row) < 1:
+            continue
+        mode = str(row[0]).strip().lower()
+        if mode not in valid_modes:
+            continue
+        try:
+            count = max(1, int(row[1] if len(row) > 1 else 1))
+        except Exception:
+            count = 1
+        try:
+            eps_coeff = float(row[2] if len(row) > 2 else 1.0)
+        except Exception:
+            eps_coeff = 1.0
+        classes = _normalize_class_filter(row[3] if len(row) > 3 else None)
+        steps.append({
+            "mode": mode,
+            "count": count,
+            "eps_coeff": eps_coeff,
+            "classes": classes,
+        })
+    return steps
+
+
+def _apply_polygon_pipeline(seg: np.ndarray, cid: int, steps: List[Dict[str, Any]], names: Dict[int, str]) -> np.ndarray:
+    out = seg
+    for step in steps:
+        class_filter = _resolve_class_filter(step.get("classes"), names)
+        if class_filter is not None and cid not in class_filter:
+            continue
+        for _ in range(max(1, int(step.get("count", 1)))):
+            out = _simplify_segment(out, step.get("mode", "none"), float(step.get("eps_coeff", 1.0)))
+    return out
+
+
 def build_objects_from_result(
     result,
     allowed_class_ids: Optional[List[int]] = None,
     simplify_mode: str = "none",      # "none" / "convex_hull" / "rdp" / "visvalingam_whyatt"
     simplify_eps_coeff: float = 1.0, # 對 "rdp" / "visvalingam_whyatt" 有效
+    polygon_opt_enable: bool = False,
+    polygon_opt_steps=None,
 ) -> List[Dict[str, Any]]:
     """
     從單一個 YOLO result 產生標準化的物件資訊（含 polygon）。
     之後畫面繪製 & JSON 輸出都只用這個。
     """
     names = getattr(result, "names", {}) or {}
+    parsed_polygon_steps = parse_polygon_steps(polygon_opt_steps) if polygon_opt_enable else []
 
     if not hasattr(result, "boxes") or result.boxes is None or len(result.boxes) == 0:
         return []
@@ -165,7 +254,10 @@ def build_objects_from_result(
                 if arr.shape[0] < 3:
                     continue
 
-                arr = _simplify_segment(arr, simplify_mode, simplify_eps_coeff)
+                if parsed_polygon_steps:
+                    arr = _apply_polygon_pipeline(arr, int(cid), parsed_polygon_steps, names)
+                else:
+                    arr = _simplify_segment(arr, simplify_mode, simplify_eps_coeff)
                 polys.append(_close_ring(arr.astype(float).tolist()))
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon

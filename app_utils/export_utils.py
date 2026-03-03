@@ -7,6 +7,8 @@ def _extract_objects(
     result,
     simplify_mode,
     simplify_eps_coeff,
+    polygon_opt_enable: bool = False,
+    polygon_opt_steps=None,
     allowed_class_ids: Optional[List[int]] = None,
 ):
     objs = build_objects_from_result(
@@ -14,6 +16,8 @@ def _extract_objects(
         allowed_class_ids=allowed_class_ids,
         simplify_mode=simplify_mode,
         simplify_eps_coeff=simplify_eps_coeff,
+        polygon_opt_enable=polygon_opt_enable,
+        polygon_opt_steps=polygon_opt_steps,
     )
     return objs
 
@@ -22,6 +26,7 @@ def _sanitize_filename(name: str) -> str:
     return keep or "model"
 
 def build_payload(result, simplify_mode, simplify_eps_coeff, model_name: str, image_info: Dict[str, Any],
+                  polygon_opt_enable: bool = False, polygon_opt_steps=None,
                   allowed_class_ids: Optional[List[int]] = None) -> Dict[str, Any]:
     """
     將單一模型的一張影像推論結果整理成 JSON 結構
@@ -39,7 +44,14 @@ def build_payload(result, simplify_mode, simplify_eps_coeff, model_name: str, im
         "model": {
             "name": model_name
         },
-        "objects": _extract_objects(result, simplify_mode, simplify_eps_coeff, allowed_class_ids=allowed_class_ids)
+        "objects": _extract_objects(
+            result,
+            simplify_mode,
+            simplify_eps_coeff,
+            polygon_opt_enable=polygon_opt_enable,
+            polygon_opt_steps=polygon_opt_steps,
+            allowed_class_ids=allowed_class_ids,
+        )
     }
 
 def export_results_cache(
@@ -49,6 +61,8 @@ def export_results_cache(
     allowed_class_ids=None,
     simplify_mode: str = "convex_hull",
     simplify_eps_coeff: float = 1.0,
+    polygon_opt_enable: bool = False,
+    polygon_opt_steps=None,
 ):
     """
     逐模型輸出成多個 JSON 檔。檔名格式：{image_base}__{model_name}.json
@@ -63,8 +77,16 @@ def export_results_cache(
     filepaths = []
     for model_name, results in results_cache.items():
         model_stem = _sanitize_filename(os.path.splitext(os.path.basename(model_name))[0])
-        payload = build_payload(results[0], simplify_mode, simplify_eps_coeff, model_name=model_name, image_info=image_info,
-                                allowed_class_ids=allowed_class_ids)
+        payload = build_payload(
+            results[0],
+            simplify_mode,
+            simplify_eps_coeff,
+            model_name=model_name,
+            image_info=image_info,
+            polygon_opt_enable=polygon_opt_enable,
+            polygon_opt_steps=polygon_opt_steps,
+            allowed_class_ids=allowed_class_ids,
+        )
         out_path = os.path.join(out_dir, f"{base}__{model_stem}.json")
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
