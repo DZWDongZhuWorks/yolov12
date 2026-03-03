@@ -130,6 +130,8 @@ def annotate_from_results(
     simplify_mode: str,
     simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]] = None,
+    polygon_opt_enabled: bool = False,
+    polygon_opt_steps=None,
 ):
     """
     使用 Ultralytics 的 plot 畫基礎層（bbox / mask），
@@ -150,6 +152,8 @@ def annotate_from_results(
         allowed_class_ids=allowed_class_ids,
         simplify_mode=simplify_mode,
         simplify_eps_coeff=simplify_eps_coeff,
+        polygon_opt_enabled=polygon_opt_enabled,
+        polygon_opt_steps=polygon_opt_steps,
     )
     
     # ---- 先畫 polygon 邊界（如果有 mask） ----
@@ -779,6 +783,8 @@ def infer_image_single(
     simplify_mode: str,
     simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
+    polygon_opt_enabled: bool,
+    polygon_opt_steps,
 ):
     model = YOLO(model_id)
     predict_kwargs = {"source": image, "imgsz": image_size, "conf": conf_threshold}
@@ -796,6 +802,8 @@ def infer_image_single(
         simplify_mode,
         simplify_eps_coeff,
         allowed_class_ids,
+        polygon_opt_enabled,
+        polygon_opt_steps,
     )
     # Gradio Image 用 RGB
     return annotated_bgr[:, :, ::-1], results  # (RGB, results)
@@ -818,6 +826,8 @@ def infer_video_single(
     allowed_class_ids: Optional[List[int]],
     mask_opt_enabled: bool,
     mask_opt_steps,
+    polygon_opt_enabled: bool,
+    polygon_opt_steps,
 ):
     model = YOLO(model_id)
 
@@ -864,6 +874,8 @@ def infer_video_single(
             simplify_mode,
             simplify_eps_coeff,
             allowed_class_ids,
+            polygon_opt_enabled,
+            polygon_opt_steps,
         )
         out.write(annotated_bgr)
         pbar.update(1)
@@ -889,6 +901,8 @@ def yolov12_multi_inference_image(
     simplify_mode: str,
     simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]],
+    polygon_opt_enabled: bool,
+    polygon_opt_steps,
 ):
     """
     同一張 image，對多個模型推論。
@@ -915,6 +929,8 @@ def yolov12_multi_inference_image(
             simplify_mode,
             simplify_eps_coeff,
             allowed_class_ids,
+            polygon_opt_enabled,
+            polygon_opt_steps,
         )
         gallery_items.append((img_rgb, mid))
         results_cache[mid] = results
@@ -939,6 +955,8 @@ def yolov12_multi_inference_video(
     allowed_class_ids: Optional[List[int]],
     mask_opt_enabled: bool,
     mask_opt_steps,
+    polygon_opt_enabled: bool,
+    polygon_opt_steps,
 ):
     """
     同一支影片對多個模型推論。
@@ -969,6 +987,8 @@ def yolov12_multi_inference_video(
             allowed_class_ids,
             mask_opt_enabled,
             mask_opt_steps,
+            polygon_opt_enabled,
+            polygon_opt_steps,
         )
         outs.append((mid, out_path))
 
@@ -1012,5 +1032,7 @@ def yolov12_inference_for_examples(
         "rdp",
         1.0,
         allowed_class_ids=None,
+        polygon_opt_enabled=False,
+        polygon_opt_steps=None,
     )
     return gallery
