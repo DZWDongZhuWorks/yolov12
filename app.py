@@ -20,7 +20,17 @@ from app_utils.export_utils import export_results_cache
 
 
 def app():
-    with gr.Blocks() as demo:
+    app_css = """
+    #result-panel {
+        position: sticky;
+        top: 12px;
+        align-self: flex-start;
+        max-height: calc(100vh - 24px);
+        overflow: auto;
+    }
+    """
+
+    with gr.Blocks(css=app_css) as demo:
         # === 初始模型清單（預設 + 已儲存自訂） ===
         initial_choices, initial_saved_custom = load_model_choices()
 
@@ -149,9 +159,9 @@ def app():
                     label="類別查詢",
                     placeholder="輸入關鍵字或 class id",
                 )
-                with gr.Accordion("套用 Classes（不選=全部）", open=False):
+                with gr.Accordion("套用 Classes（預設全選；全不選=不套用）", open=False):
                     step_class_filter = gr.CheckboxGroup(
-                        label="套用 Classes（不選=全部）",
+                        label="套用 Classes（預設全選；全不選=不套用）",
                         choices=[],
                         value=[],
                     )
@@ -159,7 +169,7 @@ def app():
                         step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                         step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
                 gr.Markdown(
-                    "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
+                    "可直接編輯下表調整順序、次數與參數（classes 留空 = 不套用；all/*/any = 全部類別）。"
                 )
                 mask_opt_steps = gr.Dataframe(
                     headers=[
@@ -215,9 +225,9 @@ def app():
                     label="類別查詢",
                     placeholder="輸入關鍵字或 class id",
                 )
-                with gr.Accordion("Polygon 套用 Classes（不選=全部）", open=False):
+                with gr.Accordion("Polygon 套用 Classes（預設全選；全不選=不套用）", open=False):
                     polygon_step_class_filter = gr.CheckboxGroup(
-                        label="套用 Classes（不選=全部）",
+                        label="套用 Classes（預設全選；全不選=不套用）",
                         choices=[],
                         value=[],
                     )
@@ -225,7 +235,7 @@ def app():
                         polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                         polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
                 gr.Markdown(
-                    "可直接編輯下表調整 Polygon 優化順序、次數與參數（classes 留空 = 全部類別）。"
+                    "可直接編輯下表調整 Polygon 優化順序、次數與參數（classes 留空 = 不套用；all/*/any = 全部類別）。"
                 )
                 polygon_opt_steps = gr.Dataframe(
                     headers=["step", "count", "eps_coeff", "classes"],
@@ -274,7 +284,7 @@ def app():
                 polygon_step_selected_classes_global = gr.State(value=[])
 
             # ======================= 右側：輸出 =======================
-            with gr.Column():
+            with gr.Column(elem_id="result-panel"):
                 # 影像輸出：Gallery 並排
                 output_gallery = gr.Gallery(
                     label="Annotated Images（多模型比較）",
@@ -879,20 +889,21 @@ def app():
              outputs=[step_selected_classes_global],
         )
         def step_select_all_classes(choices):
-            return gr.update(value=choices or []), gr.update(value="")
+            selected = choices or []
+            return gr.update(value=selected), gr.update(value=""), selected
 
         def step_clear_all_classes():
-            return gr.update(value=[]), gr.update(value="")
+            return gr.update(value=[]), gr.update(value=""), []
 
         step_select_all_btn.click(
             fn=step_select_all_classes,
             inputs=[class_choices_state],
-            outputs=[step_class_filter, step_class_filter_query],
+            outputs=[step_class_filter, step_class_filter_query, step_selected_classes_global],
         )
         step_clear_all_btn.click(
             fn=step_clear_all_classes,
             inputs=[],
-            outputs=[step_class_filter, step_class_filter_query],
+            outputs=[step_class_filter, step_class_filter_query, step_selected_classes_global],
         )
 
         # --- Polygon Step Class Filter Logic Wiring ---
@@ -909,12 +920,12 @@ def app():
         polygon_step_select_all_btn.click(
             fn=step_select_all_classes,
             inputs=[class_choices_state],
-            outputs=[polygon_step_class_filter, polygon_step_class_filter_query],
+            outputs=[polygon_step_class_filter, polygon_step_class_filter_query, polygon_step_selected_classes_global],
         )
         polygon_step_clear_all_btn.click(
             fn=step_clear_all_classes,
             inputs=[],
-            outputs=[polygon_step_class_filter, polygon_step_class_filter_query],
+            outputs=[polygon_step_class_filter, polygon_step_class_filter_query, polygon_step_selected_classes_global],
         )
 
         def replot_all_filtered(
