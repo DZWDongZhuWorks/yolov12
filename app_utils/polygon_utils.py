@@ -1,9 +1,112 @@
 # app_utils/polygon_utils.py
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import cv2
 
 DEFAULT_SIMPLIFY_EPS_RATIO = 0.01
+
+
+def _bbox_iou_xyxy(a: List[float], b: List[float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+        return 0.0
+    inter = float((inter_x2 - inter_x1) * (inter_y2 - inter_y1))
+    area_a = max(0.0, float((ax2 - ax1) * (ay2 - ay1)))
+    area_b = max(0.0, float((bx2 - bx1) * (by2 - by1)))
+    denom = area_a + area_b - inter
+    if denom <= 0:
+        return 0.0
+    return inter / denom
+
+
+def _merge_objects_for_class(objects: List[Dict[str, Any]], iou_threshold: float) -> List[Dict[str, Any]]:
+    if len(objects) <= 1:
+        return objects
+
+    parent = list(range(len(objects)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(len(objects)):
+        for j in range(i + 1, len(objects)):
+            iou = _bbox_iou_xyxy(objects[i]["bbox_xyxy"], objects[j]["bbox_xyxy"])
+            if iou > 0.0 and iou >= iou_threshold:
+                union(i, j)
+
+    groups: Dict[int, List[int]] = {}
+    for i in range(len(objects)):
+        groups.setdefault(find(i), []).append(i)
+
+    merged: List[Dict[str, Any]] = []
+    for idxs in groups.values():
+        if len(idxs) == 1:
+            merged.append(objects[idxs[0]])
+            continue
+
+        base = dict(objects[idxs[0]])
+        x1 = min(objects[idx]["bbox_xyxy"][0] for idx in idxs)
+        y1 = min(objects[idx]["bbox_xyxy"][1] for idx in idxs)
+        x2 = max(objects[idx]["bbox_xyxy"][2] for idx in idxs)
+        y2 = max(objects[idx]["bbox_xyxy"][3] for idx in idxs)
+        conf_values = [objects[idx].get("confidence") for idx in idxs if objects[idx].get("confidence") is not None]
+
+        merged_polys: List[List[List[float]]] = []
+        for idx in idxs:
+            merged_polys.extend(objects[idx].get("polygons", []))
+
+        base["bbox_xyxy"] = [float(x1), float(y1), float(x2), float(y2)]
+        base["polygons"] = merged_polys
+        base["confidence"] = max(conf_values) if conf_values else None
+        merged.append(base)
+
+    return merged
+
+
+def _apply_contour_merge_steps(
+    objects: List[Dict[str, Any]],
+    merge_steps: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    if not objects or not merge_steps:
+        return objects
+
+    out = list(objects)
+    for step in merge_steps:
+        class_filter = step.get("class_filter")
+        iou_threshold = float(step.get("merge_iou_threshold", 0.0))
+        count = max(1, int(step.get("count", 1)))
+
+        for _ in range(count):
+            passthrough: List[Dict[str, Any]] = []
+            candidates_by_class: Dict[int, List[Dict[str, Any]]] = {}
+
+            for obj in out:
+                cid = int(obj.get("class_id", -1))
+                if class_filter is not None and cid not in class_filter:
+                    passthrough.append(obj)
+                    continue
+                candidates_by_class.setdefault(cid, []).append(obj)
+
+            merged: List[Dict[str, Any]] = []
+            for cls_objs in candidates_by_class.values():
+                merged.extend(_merge_objects_for_class(cls_objs, iou_threshold=iou_threshold))
+
+            out = passthrough + merged
+
+    return out
 
 
 def _triangle_area2(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
@@ -144,6 +247,7 @@ def build_objects_from_result(
     names = getattr(result, "names", {}) or {}
 
     resolved_polygon_steps: List[Dict[str, Any]] = []
+    merge_steps: List[Dict[str, Any]] = []
     if polygon_opt_steps:
         name_to_id = {str(name).lower(): int(idx) for idx, name in (names or {}).items()}
         for step in polygon_opt_steps:
@@ -170,7 +274,11 @@ def build_objects_from_result(
                         if matched is not None:
                             resolved.add(matched)
                     class_filter = resolved or set()
-            resolved_polygon_steps.append({**step, "class_filter": class_filter})
+            resolved_step = {**step, "class_filter": class_filter}
+            if str(step.get("name", "")).strip().lower() == "contour_merge":
+                merge_steps.append(resolved_step)
+            else:
+                resolved_polygon_steps.append(resolved_step)
 
     if not hasattr(result, "boxes") or result.boxes is None or len(result.boxes) == 0:
         return []
@@ -242,4 +350,4 @@ def build_objects_from_result(
             }
         )
 
-    return objects
+    return _apply_contour_merge_steps(objects, merge_steps)

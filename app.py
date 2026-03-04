@@ -94,6 +94,7 @@ def app():
                             "distance_erode",
                             "distance_dilate",
                             "split",
+                            "contour_merge",
                             "blur",
                             "remove_small",
                             "fill_holes",
@@ -145,6 +146,13 @@ def app():
                         step=10,
                         value=0,
                     )
+                step_merge_iou_threshold = gr.Slider(
+                    label="Contour Merge IoU Threshold",
+                    minimum=0.0,
+                    maximum=1.0,
+                    step=0.01,
+                    value=0.0,
+                )
                 step_class_filter_query = gr.Textbox(
                     label="類別查詢",
                     placeholder="輸入關鍵字或 class id",
@@ -170,6 +178,7 @@ def app():
                         "blur_threshold",
                         "min_component_area",
                         "max_hole_area",
+                        "merge_iou_threshold",
                         "classes",
                     ],
                     datatype=[
@@ -180,10 +189,11 @@ def app():
                         "number",
                         "number",
                         "number",
+                        "number",
                         "str",
                     ],
                     row_count=0,
-                    col_count=(8, "fixed"),
+                    col_count=(9, "fixed"),
                     wrap=True,
                     label="Mask 優化流程",
                     type="array",
@@ -193,7 +203,7 @@ def app():
                 with gr.Row():
                     polygon_opt_method = gr.Dropdown(
                         label="新增步驟",
-                        choices=["convex_hull", "rdp", "visvalingam_whyatt"],
+                        choices=["convex_hull", "rdp", "visvalingam_whyatt", "contour_merge"],
                         value="rdp",
                     )
                     polygon_opt_count = gr.Slider(
@@ -210,6 +220,13 @@ def app():
                     maximum=5.0,
                     step=0.1,
                     value=1.0,
+                )
+                polygon_step_merge_iou_threshold = gr.Slider(
+                    label="Polygon Contour Merge IoU Threshold",
+                    minimum=0.0,
+                    maximum=1.0,
+                    step=0.01,
+                    value=0.0,
                 )
                 polygon_step_class_filter_query = gr.Textbox(
                     label="類別查詢",
@@ -228,10 +245,10 @@ def app():
                     "可直接編輯下表調整 Polygon 優化順序、次數與參數（classes 留空 = 全部類別）。"
                 )
                 polygon_opt_steps = gr.Dataframe(
-                    headers=["step", "count", "eps_coeff", "classes"],
-                    datatype=["str", "number", "number", "str"],
+                    headers=["step", "count", "eps_coeff", "merge_iou_threshold", "classes"],
+                    datatype=["str", "number", "number", "number", "str"],
                     row_count=0,
-                    col_count=(4, "fixed"),
+                    col_count=(5, "fixed"),
                     wrap=True,
                     label="Polygon 優化流程",
                     type="array",
@@ -764,6 +781,7 @@ def app():
             blur_threshold_in,
             min_component_area_in,
             max_hole_area_in,
+            merge_iou_threshold_in,
             class_filter_in,
         ):
             if isinstance(class_filter_in, (list, tuple, set)):
@@ -791,6 +809,7 @@ def app():
                     blur_threshold_in,
                     min_component_area_in,
                     max_hole_area_in,
+                    merge_iou_threshold_in,
                     class_filter_snapshot,
                 ]
             )
@@ -807,6 +826,7 @@ def app():
                 step_blur_threshold,
                 step_min_component_area,
                 step_max_hole_area,
+                step_merge_iou_threshold,
                 step_class_filter,
             ],
             outputs=[mask_opt_steps],
@@ -817,6 +837,7 @@ def app():
             method,
             count,
             eps_coeff_in,
+            merge_iou_threshold_in,
             class_filter_in,
         ):
             if isinstance(class_filter_in, (list, tuple, set)):
@@ -836,7 +857,7 @@ def app():
             else:
                 rows = []
 
-            rows.append([method, int(count), eps_coeff_in, class_filter_snapshot])
+            rows.append([method, int(count), eps_coeff_in, merge_iou_threshold_in, class_filter_snapshot])
             return rows
 
         polygon_opt_add.click(
@@ -846,6 +867,7 @@ def app():
                 polygon_opt_method,
                 polygon_opt_count,
                 polygon_step_eps_coeff,
+                polygon_step_merge_iou_threshold,
                 polygon_step_class_filter,
             ],
             outputs=[polygon_opt_steps],
