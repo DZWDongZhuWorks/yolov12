@@ -94,6 +94,7 @@ def app():
                             "distance_erode",
                             "distance_dilate",
                             "split",
+                            "merge",
                             "blur",
                             "remove_small",
                             "fill_holes",
@@ -145,6 +146,13 @@ def app():
                         step=10,
                         value=0,
                     )
+                    step_merge_iou_threshold = gr.Slider(
+                        label="Merge IoU Threshold",
+                        minimum=0.0,
+                        maximum=1.0,
+                        step=0.01,
+                        value=0.1,
+                    )
                 step_class_filter_query = gr.Textbox(
                     label="類別查詢",
                     placeholder="輸入關鍵字或 class id",
@@ -170,6 +178,7 @@ def app():
                         "blur_threshold",
                         "min_component_area",
                         "max_hole_area",
+                        "merge_iou_threshold",
                         "classes",
                     ],
                     datatype=[
@@ -180,10 +189,11 @@ def app():
                         "number",
                         "number",
                         "number",
+                        "number",
                         "str",
                     ],
                     row_count=0,
-                    col_count=(8, "fixed"),
+                    col_count=(9, "fixed"),
                     wrap=True,
                     label="Mask 優化流程",
                     type="array",
@@ -764,6 +774,7 @@ def app():
             blur_threshold_in,
             min_component_area_in,
             max_hole_area_in,
+            merge_iou_threshold_in,
             class_filter_in,
         ):
             if isinstance(class_filter_in, (list, tuple, set)):
@@ -791,6 +802,7 @@ def app():
                     blur_threshold_in,
                     min_component_area_in,
                     max_hole_area_in,
+                    merge_iou_threshold_in,
                     class_filter_snapshot,
                 ]
             )
@@ -807,6 +819,7 @@ def app():
                 step_blur_threshold,
                 step_min_component_area,
                 step_max_hole_area,
+                step_merge_iou_threshold,
                 step_class_filter,
             ],
             outputs=[mask_opt_steps],
