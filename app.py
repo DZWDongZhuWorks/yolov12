@@ -20,13 +20,43 @@ from app_utils.export_utils import export_results_cache
 
 
 def app():
-    with gr.Blocks() as demo:
+    layout_css = """
+    #main-layout {
+        align-items: flex-start;
+    }
+
+    #left-panel {
+        max-height: calc(100vh - 24px);
+        overflow-y: auto;
+        padding-right: 12px;
+    }
+
+    #right-panel {
+        position: sticky;
+        top: 12px;
+        align-self: flex-start;
+    }
+
+    @media (max-width: 900px) {
+        #left-panel {
+            max-height: none;
+            overflow-y: visible;
+            padding-right: 0;
+        }
+
+        #right-panel {
+            position: static;
+        }
+    }
+    """
+
+    with gr.Blocks(css=layout_css) as demo:
         # === 初始模型清單（預設 + 已儲存自訂） ===
         initial_choices, initial_saved_custom = load_model_choices()
 
-        with gr.Row():
+        with gr.Row(elem_id="main-layout"):
             # ======================= 左側：輸入與控制面板 =======================
-            with gr.Column():
+            with gr.Column(elem_id="left-panel"):
                 # 影像 / 影片輸入
                 image = gr.Image(type="pil", label="Image", visible=True)
                 video = gr.Video(label="Video", visible=False)
@@ -284,7 +314,7 @@ def app():
                 polygon_step_selected_classes_global = gr.State(value=[])
 
             # ======================= 右側：輸出 =======================
-            with gr.Column():
+            with gr.Column(elem_id="right-panel"):
                 # 影像輸出：Gallery 並排
                 output_gallery = gr.Gallery(
                     label="Annotated Images（多模型比較）",
