@@ -540,12 +540,11 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
 DEFAULT_POLYGON_EPS_COEFF = 1.0
 
 
-def _build_polygon_step(name: str, count: int, eps_coeff: float = DEFAULT_POLYGON_EPS_COEFF, merge_iou_threshold: float = DEFAULT_MERGE_IOU_THRESHOLD, classes=None) -> Dict[str, Any]:
+def _build_polygon_step(name: str, count: int, eps_coeff: float = DEFAULT_POLYGON_EPS_COEFF, classes=None) -> Dict[str, Any]:
     return {
         "name": name,
         "count": max(1, int(count)),
         "eps_coeff": _coerce_float(eps_coeff, DEFAULT_POLYGON_EPS_COEFF),
-        "merge_iou_threshold": max(0.0, min(1.0, _coerce_float(merge_iou_threshold, DEFAULT_MERGE_IOU_THRESHOLD))),
         "classes": _normalize_class_filter(classes),
     }
 
@@ -560,7 +559,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
     elif not steps_input:
         return []
 
-    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "contour_merge"}
+    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt"}
     steps: List[Dict[str, Any]] = []
 
     if isinstance(steps_input, str):
@@ -581,8 +580,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
             if count <= 0:
                 continue
             eps_coeff = _coerce_float(chunks[2] if len(chunks) > 2 else DEFAULT_POLYGON_EPS_COEFF, DEFAULT_POLYGON_EPS_COEFF)
-            merge_iou_threshold = _coerce_float(chunks[3] if len(chunks) > 3 else DEFAULT_MERGE_IOU_THRESHOLD, DEFAULT_MERGE_IOU_THRESHOLD)
-            steps.append(_build_polygon_step(name=name, count=count, eps_coeff=eps_coeff, merge_iou_threshold=merge_iou_threshold))
+            steps.append(_build_polygon_step(name=name, count=count, eps_coeff=eps_coeff))
         return steps
 
     iterable = steps_input
@@ -603,14 +601,12 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
             if count <= 0:
                 continue
             eps_coeff = row[2] if len(row) > 2 else DEFAULT_POLYGON_EPS_COEFF
-            merge_iou_threshold = row[3] if len(row) > 3 else DEFAULT_MERGE_IOU_THRESHOLD
-            classes = row[4] if len(row) > 4 else None
+            classes = row[3] if len(row) > 3 else None
             steps.append(
                 _build_polygon_step(
                     name=name,
                     count=count,
                     eps_coeff=eps_coeff,
-                    merge_iou_threshold=merge_iou_threshold,
                     classes=classes,
                 )
             )
