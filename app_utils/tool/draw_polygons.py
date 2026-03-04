@@ -171,6 +171,12 @@ def main():
         help="輸出影像路徑（預設：output.png）",
     )
     parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.5,
+        help="半透明度（0.0 ~ 1.0，預設：0.5）",
+    )
+    parser.add_argument(
         "--show",
         action="store_true",
         help="加上此參數時，畫完會用視窗顯示結果",
@@ -193,6 +199,7 @@ def main():
     result = draw_polygons_on_image(
         base_img,
         data,
+        args.alpha,
         draw_labels=not args.no_label,
     )
 

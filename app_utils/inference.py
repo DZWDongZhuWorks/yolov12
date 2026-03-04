@@ -130,6 +130,7 @@ def annotate_from_results(
     simplify_mode: str,
     simplify_eps_coeff: float,
     allowed_class_ids: Optional[List[int]] = None,
+    polygon_opt_steps=None,
 ):
     """
     使用 Ultralytics 的 plot 畫基礎層（bbox / mask），
@@ -150,6 +151,7 @@ def annotate_from_results(
         allowed_class_ids=allowed_class_ids,
         simplify_mode=simplify_mode,
         simplify_eps_coeff=simplify_eps_coeff,
+        polygon_opt_steps=polygon_opt_steps,
     )
     
     # ---- 先畫 polygon 邊界（如果有 mask） ----
@@ -352,14 +354,18 @@ def _normalize_class_filter(raw_value) -> Optional[List[object]]:
     if raw_value is None:
         return None
     if isinstance(raw_value, (list, tuple, set)):
+        if len(raw_value) == 0:
+            return []
         tokens = [t for t in raw_value if t not in (None, "")]
     else:
         text = str(raw_value).strip()
-        if not text or text.lower() in {"all", "*", "any"}:
+        if text.lower() in {"all", "*", "any"}:
             return None
+        if not text:
+            return []
         tokens = [t.strip() for t in text.replace("\n", ",").split(",") if t.strip()]
     if not tokens:
-        return None
+        return []
     normalized: List[object] = []
     for token in tokens:
         if isinstance(token, (int, np.integer)):
@@ -381,8 +387,10 @@ def _normalize_class_filter(raw_value) -> Optional[List[object]]:
 
 
 def _resolve_class_filter(class_filter: Optional[List[object]], names: Dict[int, str]) -> Optional[Set[int]]:
-    if not class_filter:
+    if class_filter is None:
         return None
+    if len(class_filter) == 0:
+        return set()
     name_to_id = {str(name).lower(): int(idx) for idx, name in (names or {}).items()}
     resolved: Set[int] = set()
     for token in class_filter:
@@ -411,6 +419,7 @@ def _build_step(
     blur_threshold: float = DEFAULT_BLUR_THRESHOLD,
     min_component_area: int = DEFAULT_MIN_COMPONENT_AREA,
     max_hole_area: int = DEFAULT_MAX_HOLE_AREA,
+    merge_iou_threshold: float = 0.1,
     classes=None,
 ) -> Dict[str, Any]:
     return {
@@ -421,6 +430,7 @@ def _build_step(
         "blur_threshold": _coerce_float(blur_threshold, DEFAULT_BLUR_THRESHOLD),
         "min_component_area": _coerce_int(min_component_area, DEFAULT_MIN_COMPONENT_AREA),
         "max_hole_area": _coerce_int(max_hole_area, DEFAULT_MAX_HOLE_AREA),
+        "merge_iou_threshold": min(1.0, max(0.0, _coerce_float(merge_iou_threshold, 0.1))),
         "classes": _normalize_class_filter(classes),
     }
 
@@ -466,6 +476,7 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
                 "remove_small",
                 "fill_holes",
                 "split",
+                "merge",
             }:
                 continue
             steps.append(_build_step(name=name, count=count))
@@ -497,6 +508,7 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
                     "remove_small",
                     "fill_holes",
                     "split",
+                    "merge",
                 }:
                     continue
                 morph_kernel = row[2] if len(row) > 2 else DEFAULT_MORPH_KERNEL
@@ -504,7 +516,8 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
                 blur_threshold = row[4] if len(row) > 4 else DEFAULT_BLUR_THRESHOLD
                 min_component_area = row[5] if len(row) > 5 else DEFAULT_MIN_COMPONENT_AREA
                 max_hole_area = row[6] if len(row) > 6 else DEFAULT_MAX_HOLE_AREA
-                classes = row[7] if len(row) > 7 else None
+                merge_iou_threshold = row[7] if len(row) > 7 else 0.1
+                classes = row[8] if len(row) > 8 else None
                 steps.append(
                     _build_step(
                         name=name,
@@ -514,11 +527,91 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
                         blur_threshold=blur_threshold,
                         min_component_area=min_component_area,
                         max_hole_area=max_hole_area,
+                        merge_iou_threshold=merge_iou_threshold,
                         classes=classes,
                     )
                 )
         except Exception:
             return []
+    return steps
+
+
+DEFAULT_POLYGON_EPS_COEFF = 1.0
+
+
+def _build_polygon_step(name: str, count: int, eps_coeff: float = DEFAULT_POLYGON_EPS_COEFF, classes=None) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "count": max(1, int(count)),
+        "eps_coeff": _coerce_float(eps_coeff, DEFAULT_POLYGON_EPS_COEFF),
+        "classes": _normalize_class_filter(classes),
+    }
+
+
+def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
+    if steps_input is None:
+        return []
+
+    if hasattr(steps_input, "empty"):
+        if steps_input.empty:
+            return []
+    elif not steps_input:
+        return []
+
+    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt"}
+    steps: List[Dict[str, Any]] = []
+
+    if isinstance(steps_input, str):
+        raw_parts = []
+        for part in steps_input.replace("\n", ",").split(","):
+            cleaned = part.strip()
+            if cleaned:
+                raw_parts.append(cleaned)
+
+        for item in raw_parts:
+            chunks = [p.strip() for p in item.split(":") if p.strip()]
+            if not chunks:
+                continue
+            name = chunks[0].lower()
+            if name not in valid_names:
+                continue
+            count = _coerce_int(chunks[1] if len(chunks) > 1 else 1, 1)
+            if count <= 0:
+                continue
+            eps_coeff = _coerce_float(chunks[2] if len(chunks) > 2 else DEFAULT_POLYGON_EPS_COEFF, DEFAULT_POLYGON_EPS_COEFF)
+            steps.append(_build_polygon_step(name=name, count=count, eps_coeff=eps_coeff))
+        return steps
+
+    iterable = steps_input
+    if hasattr(steps_input, "values") and hasattr(steps_input, "tolist"):
+        try:
+            iterable = steps_input.values.tolist()
+        except Exception:
+            pass
+
+    try:
+        for row in iterable:
+            if not row or len(row) < 1:
+                continue
+            name = str(row[0]).strip().lower()
+            if name not in valid_names:
+                continue
+            count = _coerce_int(row[1] if len(row) > 1 else 1, 1)
+            if count <= 0:
+                continue
+            eps_coeff = row[2] if len(row) > 2 else DEFAULT_POLYGON_EPS_COEFF
+            classes = row[3] if len(row) > 3 else None
+            steps.append(
+                _build_polygon_step(
+                    name=name,
+                    count=count,
+                    eps_coeff=eps_coeff,
+                    classes=classes,
+                )
+            )
+    except Exception:
+        return []
+
     return steps
 
 
@@ -591,6 +684,57 @@ def _fill_small_holes(binary: np.ndarray, max_hole_area: int) -> np.ndarray:
     return output
 
 
+def _merge_instances_by_iou(instances: List[Dict[str, Any]], iou_threshold: float) -> List[Dict[str, Any]]:
+    if not instances:
+        return []
+
+    pending = [dict(item) for item in instances]
+    merged_instances: List[Dict[str, Any]] = []
+
+    while pending:
+        base = pending.pop(0)
+        base_mask = (base["binary"] > 0).astype(np.uint8)
+        base_sources = list(base.get("source_indices", [])) or [base.get("source_idx", 0)]
+        base_conf = float(base.get("conf", 0.0))
+
+        changed = True
+        while changed:
+            changed = False
+            remained: List[Dict[str, Any]] = []
+            for candidate in pending:
+                cand_mask = (candidate["binary"] > 0).astype(np.uint8)
+                inter = np.logical_and(base_mask > 0, cand_mask > 0).sum()
+                if inter == 0:
+                    remained.append(candidate)
+                    continue
+                union = np.logical_or(base_mask > 0, cand_mask > 0).sum()
+                if union <= 0:
+                    remained.append(candidate)
+                    continue
+                iou = inter / float(union)
+                if iou >= iou_threshold:
+                    base_mask = np.logical_or(base_mask > 0, cand_mask > 0).astype(np.uint8)
+                    cand_sources = list(candidate.get("source_indices", [])) or [candidate.get("source_idx", 0)]
+                    base_sources.extend(cand_sources)
+                    base_conf = max(base_conf, float(candidate.get("conf", 0.0)))
+                    changed = True
+                else:
+                    remained.append(candidate)
+            pending = remained
+
+        merged_instances.append(
+            {
+                "binary": base_mask,
+                "cls_id": int(base["cls_id"]),
+                "source_idx": min(base_sources),
+                "source_indices": sorted(set(base_sources)),
+                "conf": base_conf,
+            }
+        )
+
+    return merged_instances
+
+
 def apply_mask_optimizations_to_result(
     result,
     enabled: bool,
@@ -625,27 +769,61 @@ def apply_mask_optimizations_to_result(
             }
         )
 
+    instances: List[Dict[str, Any]] = []
     for i, mask_tensor in enumerate(masks):
         mask_np = mask_tensor.detach().cpu().numpy()
-        binaries = [(mask_np > 0.5).astype(np.uint8)]
+        binary = (mask_np > 0.5).astype(np.uint8)
+        if binary.sum() == 0:
+            continue
         cls_value = float(boxes_np[i][6] if is_track else boxes_np[i][5])
         cls_id = int(cls_value)
+        conf = float(boxes_np[i][5] if is_track else boxes_np[i][4])
+        instances.append(
+            {
+                "binary": binary,
+                "cls_id": cls_id,
+                "source_idx": i,
+                "source_indices": [i],
+                "conf": conf,
+            }
+        )
 
-        for step in resolved_steps:
-            step_name = step["name"]
-            count = step["count"]
-            class_filter = step.get("class_filter")
-            if class_filter is not None and cls_id not in class_filter:
+    for step in resolved_steps:
+        step_name = step["name"]
+        count = step["count"]
+        class_filter = step.get("class_filter")
+        kernel_size = _ensure_odd(step["morph_kernel"])
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        distance_radius = max(1, kernel_size // 2)
+        blur_size = _ensure_odd(step["blur_kernel"])
+        blur_threshold = step["blur_threshold"]
+        min_component_area = step["min_component_area"]
+        max_hole_area = step["max_hole_area"]
+        merge_iou_threshold = step["merge_iou_threshold"]
+
+        if step_name == "merge":
+            for _ in range(count):
+                untouched: List[Dict[str, Any]] = []
+                grouped: Dict[int, List[Dict[str, Any]]] = {}
+                for item in instances:
+                    if class_filter is not None and item["cls_id"] not in class_filter:
+                        untouched.append(item)
+                        continue
+                    grouped.setdefault(item["cls_id"], []).append(item)
+
+                merged_all: List[Dict[str, Any]] = list(untouched)
+                for _, cls_instances in grouped.items():
+                    merged_all.extend(_merge_instances_by_iou(cls_instances, merge_iou_threshold))
+                instances = merged_all
+            continue
+
+        next_instances: List[Dict[str, Any]] = []
+        for item in instances:
+            if class_filter is not None and item["cls_id"] not in class_filter:
+                next_instances.append(item)
                 continue
-            kernel_size = _ensure_odd(step["morph_kernel"])
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-            distance_radius = max(1, kernel_size // 2)
-            blur_size = _ensure_odd(step["blur_kernel"])
-            blur_threshold = step["blur_threshold"]
-            min_component_area = step["min_component_area"]
-            max_hole_area = step["max_hole_area"]
-            if not binaries:
-                break
+
+            binaries = [item["binary"]]
             if step_name == "erode":
                 for _ in range(count):
                     binaries = [cv2.erode(b, kernel, iterations=1) for b in binaries]
@@ -678,32 +856,46 @@ def apply_mask_optimizations_to_result(
                         split_bins.extend(_split_components(b))
                     binaries = split_bins
 
-        for optimized in binaries:
-            if optimized.sum() == 0:
-                continue
+            for binary in binaries:
+                if binary.sum() == 0:
+                    continue
+                next_instances.append(
+                    {
+                        "binary": binary,
+                        "cls_id": item["cls_id"],
+                        "source_idx": item["source_idx"],
+                        "source_indices": list(item.get("source_indices", [item["source_idx"]])),
+                        "conf": item["conf"],
+                    }
+                )
+        instances = next_instances
 
-            ys, xs = np.where(optimized > 0)
-            if len(xs) == 0 or len(ys) == 0:
-                continue
-            x_min, x_max = xs.min(), xs.max()
-            y_min, y_max = ys.min(), ys.max()
+    for item in instances:
+        optimized = item["binary"]
+        if optimized.sum() == 0:
+            continue
 
-            coords = np.array([[x_min, y_min], [x_max, y_max]], dtype=np.float32)
-            coords = ops.scale_coords(mask_shape, coords, orig_shape, normalize=False)
-            x_min, y_min = coords[0]
-            x_max, y_max = coords[1]
+        ys, xs = np.where(optimized > 0)
+        if len(xs) == 0 or len(ys) == 0:
+            continue
+        x_min, x_max = xs.min(), xs.max()
+        y_min, y_max = ys.min(), ys.max()
 
-            if is_track:
-                track_id = float(boxes_np[i][4])
-                conf = float(boxes_np[i][5])
-                cls = float(boxes_np[i][6])
-                new_boxes.append([x_min, y_min, x_max, y_max, track_id, conf, cls])
-            else:
-                conf = float(boxes_np[i][4])
-                cls = float(boxes_np[i][5])
-                new_boxes.append([x_min, y_min, x_max, y_max, conf, cls])
+        coords = np.array([[x_min, y_min], [x_max, y_max]], dtype=np.float32)
+        coords = ops.scale_coords(mask_shape, coords, orig_shape, normalize=False)
+        x_min, y_min = coords[0]
+        x_max, y_max = coords[1]
 
-            new_masks.append(optimized.astype(mask_np.dtype))
+        source_idx = int(item["source_idx"])
+        cls_float = float(item["cls_id"])
+        conf = float(item["conf"])
+        if is_track:
+            track_id = float(boxes_np[source_idx][4])
+            new_boxes.append([x_min, y_min, x_max, y_max, track_id, conf, cls_float])
+        else:
+            new_boxes.append([x_min, y_min, x_max, y_max, conf, cls_float])
+
+        new_masks.append(optimized.astype(np.uint8))
 
     if not new_boxes:
         return result
@@ -778,6 +970,7 @@ def infer_image_single(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
+    polygon_opt_steps,
     allowed_class_ids: Optional[List[int]],
 ):
     model = YOLO(model_id)
@@ -796,6 +989,7 @@ def infer_image_single(
         simplify_mode,
         simplify_eps_coeff,
         allowed_class_ids,
+        polygon_opt_steps,
     )
     # Gradio Image 用 RGB
     return annotated_bgr[:, :, ::-1], results  # (RGB, results)
@@ -815,6 +1009,7 @@ def infer_video_single(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
+    polygon_opt_steps,
     allowed_class_ids: Optional[List[int]],
     mask_opt_enabled: bool,
     mask_opt_steps,
@@ -864,6 +1059,7 @@ def infer_video_single(
             simplify_mode,
             simplify_eps_coeff,
             allowed_class_ids,
+            polygon_opt_steps,
         )
         out.write(annotated_bgr)
         pbar.update(1)
@@ -888,6 +1084,7 @@ def yolov12_multi_inference_image(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
+    polygon_opt_steps,
     allowed_class_ids: Optional[List[int]],
 ):
     """
@@ -911,11 +1108,12 @@ def yolov12_multi_inference_image(
             show_masks,
             show_polygons,
             show_points,
-            show_confidence,
-            simplify_mode,
-            simplify_eps_coeff,
-            allowed_class_ids,
-        )
+                show_confidence,
+                simplify_mode,
+                simplify_eps_coeff,
+                polygon_opt_steps,
+                allowed_class_ids,
+            )
         gallery_items.append((img_rgb, mid))
         results_cache[mid] = results
 
@@ -936,6 +1134,7 @@ def yolov12_multi_inference_video(
     show_confidence: bool,
     simplify_mode: str,
     simplify_eps_coeff: float,
+    polygon_opt_steps,
     allowed_class_ids: Optional[List[int]],
     mask_opt_enabled: bool,
     mask_opt_steps,
@@ -963,11 +1162,12 @@ def yolov12_multi_inference_video(
             show_masks,
             show_polygons,
             show_points,
-            show_confidence,
-            simplify_mode,
-            simplify_eps_coeff,
-            allowed_class_ids,
-            mask_opt_enabled,
+                show_confidence,
+                simplify_mode,
+                simplify_eps_coeff,
+                polygon_opt_steps,
+                allowed_class_ids,
+                mask_opt_enabled,
             mask_opt_steps,
         )
         outs.append((mid, out_path))
@@ -1011,6 +1211,7 @@ def yolov12_inference_for_examples(
         True,   # show_confidence
         "rdp",
         1.0,
+        [],
         allowed_class_ids=None,
     )
     return gallery
