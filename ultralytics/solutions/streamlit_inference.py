@@ -61,6 +61,8 @@ class Inference:
         self.vid_file_name = None  # Holds the name of the video file
         self.selected_ind = []  # List of selected classes for detection or tracking
         self.model = None  # Container for the loaded model instance
+        self.control_col = None  # Column for left control panel
+        self.view_col = None  # Column for right render panel
 
         self.temp_dict = {"model": None, **kwargs}
         self.model_path = None  # Store model file name with path
@@ -71,7 +73,27 @@ class Inference:
 
     def web_ui(self):
         """Sets up the Streamlit web interface with custom HTML elements."""
-        menu_style_cfg = """<style>MainMenu {visibility: hidden;}</style>"""  # Hide main menu style
+        menu_style_cfg = """
+        <style>
+            MainMenu {visibility: hidden;}
+            [data-testid="stAppViewContainer"] .block-container {
+                padding-top: 1rem;
+            }
+            [data-testid="column"]:has(.control-panel) {
+                position: sticky;
+                top: 0.5rem;
+                max-height: calc(100vh - 1rem);
+                overflow-y: auto;
+                padding-right: 0.25rem;
+            }
+            .control-panel {
+                border: 1px solid rgba(49, 51, 63, 0.2);
+                border-radius: 0.75rem;
+                padding: 0.8rem;
+                background: rgba(250, 250, 250, 0.45);
+            }
+        </style>
+        """  # Hide main menu and style two-panel layout
 
         # Main title of streamlit application
         main_title_cfg = """<div><h1 style="color:#FF64DA; text-align:center; font-size:40px; margin-top:-50px;
@@ -89,31 +111,57 @@ class Inference:
         self.st.markdown(sub_title_cfg, unsafe_allow_html=True)
 
     def sidebar(self):
-        """Configures the Streamlit sidebar for model and inference settings."""
-        with self.st.sidebar:  # Add Ultralytics LOGO
+        """Configures a left in-page control panel with tabbed settings and a right render panel."""
+        self.control_col, self.view_col = self.st.columns([1, 2], gap="medium")
+
+        with self.control_col:
+            self.st.markdown('<div class="control-panel">', unsafe_allow_html=True)
             logo = "https://raw.githubusercontent.com/ultralytics/assets/main/logo/Ultralytics_Logotype_Original.svg"
-            self.st.image(logo, width=250)
+            self.st.image(logo, width=220)
+            self.st.title("User Configuration")
 
-        self.st.sidebar.title("User Configuration")  # Add elements to vertical setting menu
-        self.source = self.st.sidebar.selectbox(
-            "Video",
-            ("webcam", "video"),
-        )  # Add source selection dropdown
-        self.enable_trk = self.st.sidebar.radio("Enable Tracking", ("Yes", "No"))  # Enable object tracking
-        self.conf = float(
-            self.st.sidebar.slider("Confidence Threshold", 0.0, 1.0, self.conf, 0.01)
-        )  # Slider for confidence
-        self.iou = float(self.st.sidebar.slider("IoU Threshold", 0.0, 1.0, self.iou, 0.01))  # Slider for NMS threshold
+            tab_source, tab_model, tab_thresholds = self.st.tabs(["Source", "Model", "Thresholds"])
+            with tab_source:
+                self.source = self.st.selectbox("Video", ("webcam", "video"))
+                self.enable_trk = self.st.radio("Enable Tracking", ("Yes", "No"))
 
-        col1, col2 = self.st.columns(2)
-        self.org_frame = col1.empty()
-        self.ann_frame = col2.empty()
+            with tab_thresholds:
+                self.conf = float(self.st.slider("Confidence Threshold", 0.0, 1.0, self.conf, 0.01))
+                self.iou = float(self.st.slider("IoU Threshold", 0.0, 1.0, self.iou, 0.01))
+
+            with tab_model:
+                self._configure_model_options()
+
+            self.st.markdown("</div>", unsafe_allow_html=True)
+
+        with self.view_col:
+            self.st.subheader("Inference Results")
+            col1, col2 = self.st.columns(2)
+            self.org_frame = col1.empty()
+            self.ann_frame = col2.empty()
+
+    def _configure_model_options(self):
+        """Render model and class selection controls."""
+        available_models = [x.replace("yolo", "YOLO") for x in GITHUB_ASSETS_STEMS if x.startswith("yolo11")]
+        if self.model_path:
+            available_models.insert(0, self.model_path.split(".pt")[0])
+
+        selected_model = self.st.selectbox("Model", available_models)
+        with self.st.spinner("Model is downloading..."):
+            self.model = YOLO(f"{selected_model.lower()}.pt")
+            class_names = list(self.model.names.values())
+        self.st.success("Model loaded successfully!")
+
+        selected_classes = self.st.multiselect("Classes", class_names, default=class_names[:3])
+        self.selected_ind = [class_names.index(option) for option in selected_classes]
+        if not isinstance(self.selected_ind, list):
+            self.selected_ind = list(self.selected_ind)
 
     def source_upload(self):
         """Handles video file uploads through the Streamlit interface."""
         self.vid_file_name = ""
         if self.source == "video":
-            vid_file = self.st.sidebar.file_uploader("Upload Video File", type=["mp4", "mov", "avi", "mkv"])
+            vid_file = self.st.file_uploader("Upload Video File", type=["mp4", "mov", "avi", "mkv"])
             if vid_file is not None:
                 g = io.BytesIO(vid_file.read())  # BytesIO Object
                 with open("ultralytics.mp4", "wb") as out:  # Open temporary file as bytes
@@ -122,34 +170,13 @@ class Inference:
         elif self.source == "webcam":
             self.vid_file_name = 0
 
-    def configure(self):
-        """Configures the model and loads selected classes for inference."""
-        # Add dropdown menu for model selection
-        available_models = [x.replace("yolo", "YOLO") for x in GITHUB_ASSETS_STEMS if x.startswith("yolo11")]
-        if self.model_path:  # If user provided the custom model, insert model without suffix as *.pt is added later
-            available_models.insert(0, self.model_path.split(".pt")[0])
-        selected_model = self.st.sidebar.selectbox("Model", available_models)
-
-        with self.st.spinner("Model is downloading..."):
-            self.model = YOLO(f"{selected_model.lower()}.pt")  # Load the YOLO model
-            class_names = list(self.model.names.values())  # Convert dictionary to list of class names
-        self.st.success("Model loaded successfully!")
-
-        # Multiselect box with class names and get indices of selected classes
-        selected_classes = self.st.sidebar.multiselect("Classes", class_names, default=class_names[:3])
-        self.selected_ind = [class_names.index(option) for option in selected_classes]
-
-        if not isinstance(self.selected_ind, list):  # Ensure selected_options is a list
-            self.selected_ind = list(self.selected_ind)
-
     def inference(self):
         """Performs real-time object detection inference."""
         self.web_ui()  # Initialize the web interface
         self.sidebar()  # Create the sidebar
         self.source_upload()  # Upload the video source
-        self.configure()  # Configure the app
 
-        if self.st.sidebar.button("Start"):
+        if self.st.button("Start", type="primary"):
             stop_button = self.st.button("Stop")  # Button to stop the inference
             cap = cv2.VideoCapture(self.vid_file_name)  # Capture the video
             if not cap.isOpened():
