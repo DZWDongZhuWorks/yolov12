@@ -34,6 +34,26 @@ APP_CSS = """
     max-height: calc(100vh - 120px);
     overflow-y: auto;
 }
+
+.mask-steps-table textarea,
+.polygon-steps-table textarea,
+.mask-steps-table td:nth-child(10) > div,
+.polygon-steps-table td:nth-child(5) > div {
+    max-height: 80px;
+    overflow: auto !important;
+    white-space: pre-wrap;
+}
+
+.mask-steps-table table,
+.polygon-steps-table table {
+    table-layout: fixed;
+    width: 100%;
+}
+
+.mask-steps-table,
+.polygon-steps-table {
+    overflow-x: auto;
+}
 """
 
 
@@ -211,12 +231,20 @@ def app():
                             with gr.Row():
                                 step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                        mask_classes_col_width = gr.Slider(
+                            label="Classes 欄位寬度",
+                            minimum=220,
+                            maximum=900,
+                            step=10,
+                            value=420,
+                        )
                         gr.Markdown(
-                            "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
+                            "可直接編輯下表調整順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位預設較寬且可依需求調整（留空 = 全部類別）。"
                         )
                         mask_opt_steps = gr.Dataframe(
                             headers=[
                                 "step",
+                                "enabled",
                                 "count",
                                 "morph_kernel",
                                 "blur_kernel",
@@ -228,6 +256,7 @@ def app():
                             ],
                             datatype=[
                                 "str",
+                                "bool",
                                 "number",
                                 "number",
                                 "number",
@@ -238,10 +267,12 @@ def app():
                                 "str",
                             ],
                             row_count=0,
-                            col_count=(9, "fixed"),
+                            col_count=(10, "fixed"),
                             wrap=True,
                             label="Mask 優化流程",
                             type="array",
+                            column_widths=["120px", "90px", "90px", "120px", "120px", "130px", "150px", "130px", "160px", "420px"],
+                            elem_classes=["mask-steps-table"],
                         )
 
                     with gr.Tab("Polygon 優化"):
@@ -281,17 +312,26 @@ def app():
                             with gr.Row():
                                 polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                        polygon_classes_col_width = gr.Slider(
+                            label="Polygon Classes 欄位寬度",
+                            minimum=220,
+                            maximum=900,
+                            step=10,
+                            value=420,
+                        )
                         gr.Markdown(
-                            "可直接編輯下表調整 Polygon 優化順序、次數與參數（classes 留空 = 全部類別）。"
+                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位預設較寬且可依需求調整（留空 = 全部類別）。"
                         )
                         polygon_opt_steps = gr.Dataframe(
-                            headers=["step", "count", "eps_coeff", "classes"],
-                            datatype=["str", "number", "number", "str"],
+                            headers=["step", "enabled", "count", "eps_coeff", "classes"],
+                            datatype=["str", "bool", "number", "number", "str"],
                             row_count=0,
-                            col_count=(4, "fixed"),
+                            col_count=(5, "fixed"),
                             wrap=True,
                             label="Polygon 優化流程",
                             type="array",
+                            column_widths=["150px", "90px", "90px", "120px", "420px"],
+                            elem_classes=["polygon-steps-table"],
                         )
 
                 # 保留目前 choices 狀態（避免僅從元件讀不到 choices）
@@ -327,6 +367,47 @@ def app():
         # 型別: Dict[str, results]
         last_results = gr.State(value=None)
         raw_results = gr.State(value=None)
+
+        def resolve_allowed_ids(class_selected_items_in):
+            selected_ids = parse_selected_to_ids(class_selected_items_in)
+            if class_selected_items_in is None:
+                return None
+            if class_selected_items_in == []:
+                return []
+            return selected_ids
+
+        def render_gallery_from_results(
+            results_dict,
+            label_mode_in,
+            show_boxes_in,
+            show_masks_in,
+            show_polygons_in,
+            show_points_in,
+            show_conf_in,
+            polygon_steps,
+            allowed_ids,
+        ):
+            if not results_dict:
+                return []
+
+            gallery = []
+            for mid, results in results_dict.items():
+                annotated_bgr = annotate_from_results(
+                    results[0],
+                    label_mode_in,
+                    show_boxes_in,
+                    show_masks_in,
+                    show_polygons_in,
+                    show_points_in,
+                    show_conf_in,
+                    "none",
+                    1.0,
+                    allowed_ids,
+                    polygon_steps,
+                )
+                gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
+
+            return gallery
 
         # ======== Input Type 切換：控制元件可視性 ========
         def update_visibility(input_type_val: str):
@@ -398,13 +479,7 @@ def app():
             new_choices, new_saved = persist_model_choices(saved_models_in, mids)
 
             # 3) 類別篩選條件計算
-            parsed_selected_ids = parse_selected_to_ids(class_selected_items_in)
-            if class_selected_items_in is None:
-                allowed_ids: Optional[List[int]] = None  # 不過濾
-            elif len(class_selected_items_in) == 0:
-                allowed_ids = []  # 全部隱藏
-            else:
-                allowed_ids = parsed_selected_ids
+            allowed_ids: Optional[List[int]] = resolve_allowed_ids(class_selected_items_in)
 
             # 3-1) 自動取得模型 class list（等同按下「讀取模型資訊」）
             class_choices_new = class_choices_in or []
@@ -462,7 +537,7 @@ def app():
                     )
 
                 # 4-1) 多模型推論
-                gallery, results_cache = yolov12_multi_inference_image(
+                _, results_cache = yolov12_multi_inference_image(
                     image_in,
                     mids,
                     image_size_in,
@@ -487,24 +562,17 @@ def app():
                     mask_opt_steps_in,
                 )
 
-                # Re-render gallery if mask optimization is enabled
-                if (mask_opt_enable_in and mask_opt_steps_in) or (polygon_opt_enable_in and polygon_steps):
-                    gallery = []
-                    for mid, results in results_cache.items():
-                        annotated_bgr = annotate_from_results(
-                            results[0],
-                            label_mode_in,
-                            show_boxes_in,
-                            show_masks_in,
-                            show_polygons_in,
-                            show_points_in,
-                            show_conf_in,
-                            "none",
-                            1.0,
-                            allowed_ids,
-                            polygon_steps,
-                        )
-                        gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
+                gallery = render_gallery_from_results(
+                    results_cache,
+                    label_mode_in,
+                    show_boxes_in,
+                    show_masks_in,
+                    show_polygons_in,
+                    show_points_in,
+                    show_conf_in,
+                    polygon_steps,
+                    allowed_ids,
+                )
 
                 # 4-2) 構建 image meta（檔名、寬高）
                 width = height = 0
@@ -827,6 +895,7 @@ def app():
             rows.append(
                 [
                     method,
+                    True,
                     int(count),
                     morph_kernel_in,
                     blur_kernel_in,
@@ -880,7 +949,7 @@ def app():
             else:
                 rows = []
 
-            rows.append([method, int(count), eps_coeff_in, class_filter_snapshot])
+            rows.append([method, True, int(count), eps_coeff_in, class_filter_snapshot])
             return rows
 
         polygon_opt_add.click(
@@ -895,7 +964,28 @@ def app():
             outputs=[polygon_opt_steps],
         )
 
-        
+        def update_mask_table_classes_width(width_px):
+            width = int(width_px)
+            return gr.update(column_widths=[
+                "120px", "90px", "90px", "120px", "120px", "130px", "150px", "130px", "160px", f"{width}px"
+            ])
+
+        def update_polygon_table_classes_width(width_px):
+            width = int(width_px)
+            return gr.update(column_widths=["150px", "90px", "90px", "120px", f"{width}px"])
+
+        mask_classes_col_width.change(
+            fn=update_mask_table_classes_width,
+            inputs=[mask_classes_col_width],
+            outputs=[mask_opt_steps],
+        )
+
+        polygon_classes_col_width.change(
+            fn=update_polygon_table_classes_width,
+            inputs=[polygon_classes_col_width],
+            outputs=[polygon_opt_steps],
+        )
+
         # --- Class Filter Logic Wiring ---
         # 1. When Query Changes -> Update UI Choices & Value (Read from Global)
         class_filter_query.change(
@@ -977,34 +1067,20 @@ def app():
             if input_type_in != "Image" or not last_results_dict:
                 return gr.update()
 
-            # 解析類別
-            selected_ids = parse_selected_to_ids(class_selected_items_in)
-            if class_selected_items_in is None:
-                allowed_ids = None
-            elif class_selected_items_in == []:
-                allowed_ids = []
-            else:
-                allowed_ids = selected_ids
+            allowed_ids = resolve_allowed_ids(class_selected_items_in)
             polygon_steps = parse_polygon_steps(polygon_opt_steps_in) if polygon_opt_enable_in else []
 
-            gallery = []
-            for mid, results in last_results_dict.items():
-                annotated_bgr = annotate_from_results(
-                    results[0],
-                    label_mode_in,
-                    show_boxes_in,
-                    show_masks_in,
-                    show_polygons_in,
-                    show_points_in,
-                    show_conf_in,
-                    "none",
-                    1.0,
-                    allowed_ids,
-                    polygon_steps,
-                )
-                gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
-
-            return gallery
+            return render_gallery_from_results(
+                last_results_dict,
+                label_mode_in,
+                show_boxes_in,
+                show_masks_in,
+                show_polygons_in,
+                show_points_in,
+                show_conf_in,
+                polygon_steps,
+                allowed_ids,
+            )
 
         # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪
         for ctrl in (
@@ -1093,12 +1169,7 @@ def app():
             )
             return updated_results, gallery
 
-        for ctrl in (
-            mask_opt_enable,
-            mask_opt_steps,
-            polygon_opt_enable,
-            polygon_opt_steps,
-        ):
+        for ctrl in (mask_opt_enable, mask_opt_steps):
             ctrl.change(
                 fn=update_mask_processing,
                 inputs=[
@@ -1156,13 +1227,7 @@ def app():
             if not last_results_dict or not image_meta:
                 return []
 
-            selected_ids = parse_selected_to_ids(class_selected_items_in)
-            if class_selected_items_in is None:
-                allowed_ids = None   # 不過濾
-            elif class_selected_items_in == []:
-                allowed_ids = []     # 全部隱藏
-            else:
-                allowed_ids = selected_ids
+            allowed_ids = resolve_allowed_ids(class_selected_items_in)
 
             files = export_results_cache(
                 last_results_dict,
