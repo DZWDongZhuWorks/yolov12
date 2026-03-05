@@ -96,14 +96,57 @@ def _simplify_segment(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarra
     return approx.reshape(-1, 2)
 
 
-def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
+def _polygon_to_min_rect_and_line(
+    seg: np.ndarray,
+    min_aspect: float,
+) -> tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+    if seg.shape[0] < 3:
+        return seg, None, None
+
+    rect = cv2.minAreaRect(seg.astype(np.float32))
+    (cx, cy), (w, h), angle = rect
+    if w <= 0 or h <= 0:
+        return seg, None, None
+
+    long_side = max(w, h)
+    short_side = min(w, h)
+    if min_aspect > 0:
+        aspect = long_side / (short_side + 1e-6)
+        if aspect < min_aspect:
+            return seg, None, None
+
+    rect_poly = cv2.boxPoints(rect).astype(np.float32)
+
+    if w >= h:
+        theta = np.deg2rad(angle)
+        length = w
+    else:
+        theta = np.deg2rad(angle + 90.0)
+        length = h
+
+    ux, uy = np.cos(theta), np.sin(theta)
+    half_len = 0.5 * length
+    dx, dy = ux * half_len, uy * half_len
+    p1 = np.array([cx - dx, cy - dy], dtype=np.float32)
+    p2 = np.array([cx + dx, cy + dy], dtype=np.float32)
+    line_seg = np.vstack([p1, p2]).astype(np.float32)
+    line_vec = (p2 - p1).astype(np.float32)
+    return rect_poly, line_seg, line_vec
+
+
+def _apply_polygon_steps(
+    seg: np.ndarray,
+    steps: Optional[List[Dict[str, Any]]],
+    class_id: int,
+) -> tuple[np.ndarray, Optional[List[float]]]:
     if seg.shape[0] <= 3 or not steps:
-        return seg
+        return seg, None
 
     out = seg
+    line_vector: Optional[List[float]] = None
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_rect", "min_line"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -111,10 +154,18 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
         count = max(1, int(step.get("count", 1)))
         eps_coeff = float(step.get("eps_coeff", 1.0))
         for _ in range(count):
-            out = _simplify_segment(out, name, eps_coeff)
+            if name == "min_rect":
+                out, _, _ = _polygon_to_min_rect_and_line(out, min_aspect=eps_coeff)
+            elif name == "min_line":
+                _, line_seg, line_vec = _polygon_to_min_rect_and_line(out, min_aspect=eps_coeff)
+                if line_seg is not None and line_vec is not None:
+                    out = line_seg
+                    line_vector = line_vec.astype(float).tolist()
+            else:
+                out = _simplify_segment(out, name, eps_coeff)
             if out.shape[0] <= 3:
                 break
-    return out
+    return out, line_vector
 
 
 def _close_ring(points: List[List[float]]) -> List[List[float]]:
@@ -200,6 +251,7 @@ def build_objects_from_result(
 
         # --- 產生 polygons ---
         polys: List[List[List[float]]] = []
+        line_vectors: List[Optional[List[float]]] = []
 
         if has_masks and raw_polys is not None and i < len(raw_polys):
             item = raw_polys[i]
@@ -217,8 +269,12 @@ def build_objects_from_result(
                     continue
 
                 arr = _simplify_segment(arr, simplify_mode, simplify_eps_coeff)
-                arr = _apply_polygon_steps(arr, resolved_polygon_steps, int(cid))
-                polys.append(_close_ring(arr.astype(float).tolist()))
+                arr, line_vector = _apply_polygon_steps(arr, resolved_polygon_steps, int(cid))
+                if arr.shape[0] == 2:
+                    polys.append(arr.astype(float).tolist())
+                else:
+                    polys.append(_close_ring(arr.astype(float).tolist()))
+                line_vectors.append(line_vector)
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon
             polys.append(
@@ -232,14 +288,15 @@ def build_objects_from_result(
                 )
             )
 
-        objects.append(
-            {
-                "class_id": int(cid),
-                "class_name": class_name,
-                "confidence": conf,
-                "bbox_xyxy": [x1, y1, x2, y2],
-                "polygons": polys,
-            }
-        )
+        obj = {
+            "class_id": int(cid),
+            "class_name": class_name,
+            "confidence": conf,
+            "bbox_xyxy": [x1, y1, x2, y2],
+            "polygons": polys,
+        }
+        if any(v is not None for v in line_vectors):
+            obj["line_vectors"] = line_vectors
+        objects.append(obj)
 
     return objects

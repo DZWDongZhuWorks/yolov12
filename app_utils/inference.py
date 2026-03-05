@@ -568,7 +568,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
     elif not steps_input:
         return []
 
-    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt"}
+    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_rect", "min_line"}
     steps: List[Dict[str, Any]] = []
 
     if isinstance(steps_input, str):

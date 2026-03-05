@@ -281,7 +281,7 @@ def app():
                         with gr.Row():
                             polygon_opt_method = gr.Dropdown(
                                 label="新增步驟",
-                                choices=["convex_hull", "rdp", "visvalingam_whyatt"],
+                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_rect", "min_line"],
                                 value="rdp",
                             )
                             polygon_opt_count = gr.Slider(
@@ -320,7 +320,7 @@ def app():
                             value=420,
                         )
                         gr.Markdown(
-                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位預設較寬且可依需求調整（留空 = 全部類別）。"
+                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位預設較寬且可依需求調整（留空 = 全部類別）。`min_rect` / `min_line` 會使用 `eps_coeff` 當作最小長寬比（min_aspect）。"
                         )
                         polygon_opt_steps = gr.Dataframe(
                             headers=["step", "enabled", "count", "eps_coeff", "classes"],
