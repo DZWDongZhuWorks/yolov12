@@ -328,6 +328,47 @@ def app():
         last_results = gr.State(value=None)
         raw_results = gr.State(value=None)
 
+        def resolve_allowed_ids(class_selected_items_in):
+            selected_ids = parse_selected_to_ids(class_selected_items_in)
+            if class_selected_items_in is None:
+                return None
+            if class_selected_items_in == []:
+                return []
+            return selected_ids
+
+        def render_gallery_from_results(
+            results_dict,
+            label_mode_in,
+            show_boxes_in,
+            show_masks_in,
+            show_polygons_in,
+            show_points_in,
+            show_conf_in,
+            polygon_steps,
+            allowed_ids,
+        ):
+            if not results_dict:
+                return []
+
+            gallery = []
+            for mid, results in results_dict.items():
+                annotated_bgr = annotate_from_results(
+                    results[0],
+                    label_mode_in,
+                    show_boxes_in,
+                    show_masks_in,
+                    show_polygons_in,
+                    show_points_in,
+                    show_conf_in,
+                    "none",
+                    1.0,
+                    allowed_ids,
+                    polygon_steps,
+                )
+                gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
+
+            return gallery
+
         # ======== Input Type 切換：控制元件可視性 ========
         def update_visibility(input_type_val: str):
             image_v = gr.update(visible=(input_type_val == "Image"))
@@ -398,13 +439,7 @@ def app():
             new_choices, new_saved = persist_model_choices(saved_models_in, mids)
 
             # 3) 類別篩選條件計算
-            parsed_selected_ids = parse_selected_to_ids(class_selected_items_in)
-            if class_selected_items_in is None:
-                allowed_ids: Optional[List[int]] = None  # 不過濾
-            elif len(class_selected_items_in) == 0:
-                allowed_ids = []  # 全部隱藏
-            else:
-                allowed_ids = parsed_selected_ids
+            allowed_ids: Optional[List[int]] = resolve_allowed_ids(class_selected_items_in)
 
             # 3-1) 自動取得模型 class list（等同按下「讀取模型資訊」）
             class_choices_new = class_choices_in or []
@@ -462,7 +497,7 @@ def app():
                     )
 
                 # 4-1) 多模型推論
-                gallery, results_cache = yolov12_multi_inference_image(
+                _, results_cache = yolov12_multi_inference_image(
                     image_in,
                     mids,
                     image_size_in,
@@ -487,24 +522,17 @@ def app():
                     mask_opt_steps_in,
                 )
 
-                # Re-render gallery if mask optimization is enabled
-                if (mask_opt_enable_in and mask_opt_steps_in) or (polygon_opt_enable_in and polygon_steps):
-                    gallery = []
-                    for mid, results in results_cache.items():
-                        annotated_bgr = annotate_from_results(
-                            results[0],
-                            label_mode_in,
-                            show_boxes_in,
-                            show_masks_in,
-                            show_polygons_in,
-                            show_points_in,
-                            show_conf_in,
-                            "none",
-                            1.0,
-                            allowed_ids,
-                            polygon_steps,
-                        )
-                        gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
+                gallery = render_gallery_from_results(
+                    results_cache,
+                    label_mode_in,
+                    show_boxes_in,
+                    show_masks_in,
+                    show_polygons_in,
+                    show_points_in,
+                    show_conf_in,
+                    polygon_steps,
+                    allowed_ids,
+                )
 
                 # 4-2) 構建 image meta（檔名、寬高）
                 width = height = 0
@@ -977,34 +1005,20 @@ def app():
             if input_type_in != "Image" or not last_results_dict:
                 return gr.update()
 
-            # 解析類別
-            selected_ids = parse_selected_to_ids(class_selected_items_in)
-            if class_selected_items_in is None:
-                allowed_ids = None
-            elif class_selected_items_in == []:
-                allowed_ids = []
-            else:
-                allowed_ids = selected_ids
+            allowed_ids = resolve_allowed_ids(class_selected_items_in)
             polygon_steps = parse_polygon_steps(polygon_opt_steps_in) if polygon_opt_enable_in else []
 
-            gallery = []
-            for mid, results in last_results_dict.items():
-                annotated_bgr = annotate_from_results(
-                    results[0],
-                    label_mode_in,
-                    show_boxes_in,
-                    show_masks_in,
-                    show_polygons_in,
-                    show_points_in,
-                    show_conf_in,
-                    "none",
-                    1.0,
-                    allowed_ids,
-                    polygon_steps,
-                )
-                gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
-
-            return gallery
+            return render_gallery_from_results(
+                last_results_dict,
+                label_mode_in,
+                show_boxes_in,
+                show_masks_in,
+                show_polygons_in,
+                show_points_in,
+                show_conf_in,
+                polygon_steps,
+                allowed_ids,
+            )
 
         # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪
         for ctrl in (
@@ -1093,12 +1107,7 @@ def app():
             )
             return updated_results, gallery
 
-        for ctrl in (
-            mask_opt_enable,
-            mask_opt_steps,
-            polygon_opt_enable,
-            polygon_opt_steps,
-        ):
+        for ctrl in (mask_opt_enable, mask_opt_steps):
             ctrl.change(
                 fn=update_mask_processing,
                 inputs=[
@@ -1156,13 +1165,7 @@ def app():
             if not last_results_dict or not image_meta:
                 return []
 
-            selected_ids = parse_selected_to_ids(class_selected_items_in)
-            if class_selected_items_in is None:
-                allowed_ids = None   # 不過濾
-            elif class_selected_items_in == []:
-                allowed_ids = []     # 全部隱藏
-            else:
-                allowed_ids = selected_ids
+            allowed_ids = resolve_allowed_ids(class_selected_items_in)
 
             files = export_results_cache(
                 last_results_dict,
