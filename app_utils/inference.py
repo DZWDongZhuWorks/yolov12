@@ -496,7 +496,15 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
                 if not row or len(row) < 1:
                     continue
                 name = str(row[0]).strip().lower()
-                count = _coerce_int(row[1] if len(row) > 1 else None, 1)
+                enabled = True
+                count_index = 1
+                if len(row) > 1 and isinstance(row[1], (bool, np.bool_)):
+                    enabled = bool(row[1])
+                    count_index = 2
+                if not enabled:
+                    continue
+
+                count = _coerce_int(row[count_index] if len(row) > count_index else None, 1)
                 if count <= 0:
                     continue
                 if name == "contour_split":
@@ -513,13 +521,13 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
                     "merge",
                 }:
                     continue
-                morph_kernel = row[2] if len(row) > 2 else DEFAULT_MORPH_KERNEL
-                blur_kernel = row[3] if len(row) > 3 else DEFAULT_BLUR_KERNEL
-                blur_threshold = row[4] if len(row) > 4 else DEFAULT_BLUR_THRESHOLD
-                min_component_area = row[5] if len(row) > 5 else DEFAULT_MIN_COMPONENT_AREA
-                max_hole_area = row[6] if len(row) > 6 else DEFAULT_MAX_HOLE_AREA
-                merge_iou_threshold = row[7] if len(row) > 7 else 0.1
-                classes = row[8] if len(row) > 8 else None
+                morph_kernel = row[count_index + 1] if len(row) > count_index + 1 else DEFAULT_MORPH_KERNEL
+                blur_kernel = row[count_index + 2] if len(row) > count_index + 2 else DEFAULT_BLUR_KERNEL
+                blur_threshold = row[count_index + 3] if len(row) > count_index + 3 else DEFAULT_BLUR_THRESHOLD
+                min_component_area = row[count_index + 4] if len(row) > count_index + 4 else DEFAULT_MIN_COMPONENT_AREA
+                max_hole_area = row[count_index + 5] if len(row) > count_index + 5 else DEFAULT_MAX_HOLE_AREA
+                merge_iou_threshold = row[count_index + 6] if len(row) > count_index + 6 else 0.1
+                classes = row[count_index + 7] if len(row) > count_index + 7 else None
                 steps.append(
                     _build_step(
                         name=name,
@@ -598,11 +606,20 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
             name = str(row[0]).strip().lower()
             if name not in valid_names:
                 continue
-            count = _coerce_int(row[1] if len(row) > 1 else 1, 1)
+
+            enabled = True
+            count_index = 1
+            if len(row) > 1 and isinstance(row[1], (bool, np.bool_)):
+                enabled = bool(row[1])
+                count_index = 2
+            if not enabled:
+                continue
+
+            count = _coerce_int(row[count_index] if len(row) > count_index else 1, 1)
             if count <= 0:
                 continue
-            eps_coeff = row[2] if len(row) > 2 else DEFAULT_POLYGON_EPS_COEFF
-            classes = row[3] if len(row) > 3 else None
+            eps_coeff = row[count_index + 1] if len(row) > count_index + 1 else DEFAULT_POLYGON_EPS_COEFF
+            classes = row[count_index + 2] if len(row) > count_index + 2 else None
             steps.append(
                 _build_polygon_step(
                     name=name,
