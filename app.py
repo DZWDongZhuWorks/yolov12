@@ -38,7 +38,7 @@ APP_CSS = """
 .mask-steps-table textarea,
 .polygon-steps-table textarea,
 .mask-steps-table td:nth-child(10) > div,
-.polygon-steps-table td:nth-child(5) > div {
+.polygon-steps-table td:nth-child(7) > div {
     max-height: 80px;
     overflow: auto !important;
     white-space: pre-wrap;
@@ -46,8 +46,8 @@ APP_CSS = """
 
 .mask-steps-table th:nth-child(10),
 .mask-steps-table td:nth-child(10),
-.polygon-steps-table th:nth-child(5),
-.polygon-steps-table td:nth-child(5) {
+.polygon-steps-table th:nth-child(7),
+.polygon-steps-table td:nth-child(7) {
     min-width: 320px !important;
     width: 320px !important;
 }
@@ -281,13 +281,28 @@ def app():
                                 value=1,
                             )
                             polygon_opt_add = gr.Button(value="加入步驟", variant="secondary")
-                        polygon_step_eps_coeff = gr.Slider(
-                            label="Step Epsilon Coefficient",
-                            minimum=0.1,
-                            maximum=5.0,
-                            step=0.1,
-                            value=1.0,
-                        )
+                        with gr.Row():
+                            polygon_step_eps_coeff = gr.Slider(
+                                label="Step Epsilon Coefficient",
+                                minimum=0.1,
+                                maximum=5.0,
+                                step=0.1,
+                                value=1.0,
+                            )
+                            polygon_step_min_aspect = gr.Slider(
+                                label="Min Aspect (min_area_rect / export_line)",
+                                minimum=0.0,
+                                maximum=20.0,
+                                step=0.1,
+                                value=0.0,
+                            )
+                            polygon_step_pca_min_cosine = gr.Slider(
+                                label="PCA Min Cosine (方向分群門檻)",
+                                minimum=0.7,
+                                maximum=0.999,
+                                step=0.001,
+                                value=0.94,
+                            )
                         polygon_step_class_filter_query = gr.Textbox(
                             label="類別查詢",
                             placeholder="輸入關鍵字或 class id",
@@ -302,13 +317,13 @@ def app():
                                 polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
                         gr.Markdown(
-                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位可捲動（留空 = 全部類別）。"
+                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`classes` 欄位可捲動（留空 = 全部類別）。"
                         )
                         polygon_opt_steps = gr.Dataframe(
-                            headers=["step", "enabled", "count", "eps_coeff", "classes"],
-                            datatype=["str", "bool", "number", "number", "str"],
+                            headers=["step", "enabled", "count", "eps_coeff", "min_aspect", "pca_min_cosine", "classes"],
+                            datatype=["str", "bool", "number", "number", "number", "number", "str"],
                             row_count=0,
-                            col_count=(5, "fixed"),
+                            col_count=(7, "fixed"),
                             wrap=True,
                             label="Polygon 優化流程",
                             type="array",
@@ -911,6 +926,8 @@ def app():
             method,
             count,
             eps_coeff_in,
+            min_aspect_in,
+            pca_min_cosine_in,
             class_filter_in,
         ):
             if isinstance(class_filter_in, (list, tuple, set)):
@@ -930,7 +947,7 @@ def app():
             else:
                 rows = []
 
-            rows.append([method, True, int(count), eps_coeff_in, class_filter_snapshot])
+            rows.append([method, True, int(count), eps_coeff_in, min_aspect_in, pca_min_cosine_in, class_filter_snapshot])
             return rows
 
         polygon_opt_add.click(
@@ -940,6 +957,8 @@ def app():
                 polygon_opt_method,
                 polygon_opt_count,
                 polygon_step_eps_coeff,
+                polygon_step_min_aspect,
+                polygon_step_pca_min_cosine,
                 polygon_step_class_filter,
             ],
             outputs=[polygon_opt_steps],

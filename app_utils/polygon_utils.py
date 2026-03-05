@@ -96,7 +96,7 @@ def _simplify_segment(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarra
     return approx.reshape(-1, 2)
 
 
-def _polygon_to_min_area_rect(seg: np.ndarray) -> np.ndarray:
+def _polygon_to_min_area_rect(seg: np.ndarray, min_aspect: float = 0.0) -> np.ndarray:
     if seg.shape[0] < 3:
         return seg
 
@@ -105,11 +105,18 @@ def _polygon_to_min_area_rect(seg: np.ndarray) -> np.ndarray:
     if w <= 0 or h <= 0:
         return seg
 
+    long_side = max(w, h)
+    short_side = min(w, h)
+    if min_aspect > 0:
+        aspect = float(long_side / (short_side + 1e-6))
+        if aspect < min_aspect:
+            return seg
+
     box = cv2.boxPoints(rect)
     return box.reshape(-1, 2)
 
 
-def _polygon_to_long_axis_line(seg: np.ndarray) -> np.ndarray:
+def _polygon_to_long_axis_line(seg: np.ndarray, min_aspect: float = 0.0) -> np.ndarray:
     if seg.shape[0] < 3:
         return seg
 
@@ -117,6 +124,13 @@ def _polygon_to_long_axis_line(seg: np.ndarray) -> np.ndarray:
     (cx, cy), (w, h), angle = rect
     if w <= 0 or h <= 0:
         return seg
+
+    long_side = max(w, h)
+    short_side = min(w, h)
+    if min_aspect > 0:
+        aspect = float(long_side / (short_side + 1e-6))
+        if aspect < min_aspect:
+            return seg
 
     if w >= h:
         theta = np.deg2rad(angle)
@@ -146,11 +160,12 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
             continue
         count = max(1, int(step.get("count", 1)))
         eps_coeff = float(step.get("eps_coeff", 1.0))
+        min_aspect = max(0.0, float(step.get("min_aspect", 0.0)))
         for _ in range(count):
             if name == "min_area_rect":
-                out = _polygon_to_min_area_rect(out)
+                out = _polygon_to_min_area_rect(out, min_aspect=min_aspect)
             elif name == "export_line":
-                out = _polygon_to_long_axis_line(out)
+                out = _polygon_to_long_axis_line(out, min_aspect=min_aspect)
             elif name == "pca":
                 # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
                 continue
@@ -293,7 +308,9 @@ def _apply_pca_alignment(objects: List[Dict[str, Any]], steps: Optional[List[Dic
                     continue
 
                 units = [e["unit"] for e in entries]
-                clusters = _cluster_line_orientations(units, min_cosine=0.94)
+                pca_min_cosine = float(step.get("pca_min_cosine", 0.94))
+                pca_min_cosine = max(0.0, min(1.0, pca_min_cosine))
+                clusters = _cluster_line_orientations(units, min_cosine=pca_min_cosine)
 
                 for cluster in clusters:
                     axis = cluster.get("axis")
