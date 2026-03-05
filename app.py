@@ -34,6 +34,26 @@ APP_CSS = """
     max-height: calc(100vh - 120px);
     overflow-y: auto;
 }
+
+.mask-steps-table textarea,
+.polygon-steps-table textarea,
+.mask-steps-table td:nth-child(10) > div,
+.polygon-steps-table td:nth-child(5) > div {
+    max-height: 80px;
+    overflow: auto !important;
+    white-space: pre-wrap;
+}
+
+.mask-steps-table table,
+.polygon-steps-table table {
+    table-layout: fixed;
+    width: 100%;
+}
+
+.mask-steps-table,
+.polygon-steps-table {
+    overflow-x: auto;
+}
 """
 
 
@@ -211,12 +231,20 @@ def app():
                             with gr.Row():
                                 step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                        mask_classes_col_width = gr.Slider(
+                            label="Classes 欄位寬度",
+                            minimum=220,
+                            maximum=900,
+                            step=10,
+                            value=420,
+                        )
                         gr.Markdown(
-                            "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
+                            "可直接編輯下表調整順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位預設較寬且可依需求調整（留空 = 全部類別）。"
                         )
                         mask_opt_steps = gr.Dataframe(
                             headers=[
                                 "step",
+                                "enabled",
                                 "count",
                                 "morph_kernel",
                                 "blur_kernel",
@@ -228,6 +256,7 @@ def app():
                             ],
                             datatype=[
                                 "str",
+                                "bool",
                                 "number",
                                 "number",
                                 "number",
@@ -238,10 +267,12 @@ def app():
                                 "str",
                             ],
                             row_count=0,
-                            col_count=(9, "fixed"),
+                            col_count=(10, "fixed"),
                             wrap=True,
                             label="Mask 優化流程",
                             type="array",
+                            column_widths=["120px", "90px", "90px", "120px", "120px", "130px", "150px", "130px", "160px", "420px"],
+                            elem_classes=["mask-steps-table"],
                         )
 
                     with gr.Tab("Polygon 優化"):
@@ -281,17 +312,26 @@ def app():
                             with gr.Row():
                                 polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                        polygon_classes_col_width = gr.Slider(
+                            label="Polygon Classes 欄位寬度",
+                            minimum=220,
+                            maximum=900,
+                            step=10,
+                            value=420,
+                        )
                         gr.Markdown(
-                            "可直接編輯下表調整 Polygon 優化順序、次數與參數（classes 留空 = 全部類別）。"
+                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位預設較寬且可依需求調整（留空 = 全部類別）。"
                         )
                         polygon_opt_steps = gr.Dataframe(
-                            headers=["step", "count", "eps_coeff", "classes"],
-                            datatype=["str", "number", "number", "str"],
+                            headers=["step", "enabled", "count", "eps_coeff", "classes"],
+                            datatype=["str", "bool", "number", "number", "str"],
                             row_count=0,
-                            col_count=(4, "fixed"),
+                            col_count=(5, "fixed"),
                             wrap=True,
                             label="Polygon 優化流程",
                             type="array",
+                            column_widths=["150px", "90px", "90px", "120px", "420px"],
+                            elem_classes=["polygon-steps-table"],
                         )
 
                 # 保留目前 choices 狀態（避免僅從元件讀不到 choices）
@@ -855,6 +895,7 @@ def app():
             rows.append(
                 [
                     method,
+                    True,
                     int(count),
                     morph_kernel_in,
                     blur_kernel_in,
@@ -908,7 +949,7 @@ def app():
             else:
                 rows = []
 
-            rows.append([method, int(count), eps_coeff_in, class_filter_snapshot])
+            rows.append([method, True, int(count), eps_coeff_in, class_filter_snapshot])
             return rows
 
         polygon_opt_add.click(
@@ -923,7 +964,28 @@ def app():
             outputs=[polygon_opt_steps],
         )
 
-        
+        def update_mask_table_classes_width(width_px):
+            width = int(width_px)
+            return gr.update(column_widths=[
+                "120px", "90px", "90px", "120px", "120px", "130px", "150px", "130px", "160px", f"{width}px"
+            ])
+
+        def update_polygon_table_classes_width(width_px):
+            width = int(width_px)
+            return gr.update(column_widths=["150px", "90px", "90px", "120px", f"{width}px"])
+
+        mask_classes_col_width.change(
+            fn=update_mask_table_classes_width,
+            inputs=[mask_classes_col_width],
+            outputs=[mask_opt_steps],
+        )
+
+        polygon_classes_col_width.change(
+            fn=update_polygon_table_classes_width,
+            inputs=[polygon_classes_col_width],
+            outputs=[polygon_opt_steps],
+        )
+
         # --- Class Filter Logic Wiring ---
         # 1. When Query Changes -> Update UI Choices & Value (Read from Global)
         class_filter_query.change(
