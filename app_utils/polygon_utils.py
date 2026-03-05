@@ -280,7 +280,8 @@ def _apply_pca_alignment(objects: List[Dict[str, Any]], steps: Optional[List[Dic
         alpha = max(0.0, min(1.0, alpha))
 
         for _ in range(count):
-            class_entries: Dict[int, List[Dict[str, Any]]] = {}
+            cross_class = bool(step.get("pca_cross_class", False))
+            grouped_entries: Dict[str, List[Dict[str, Any]]] = {}
             for obj_idx, obj in enumerate(objects):
                 cid = int(obj.get("class_id", -1))
                 if class_filter is not None and cid not in class_filter:
@@ -294,7 +295,8 @@ def _apply_pca_alignment(objects: List[Dict[str, Any]], steps: Optional[List[Dic
                     unit = _line_unit_direction(line)
                     if unit is None:
                         continue
-                    class_entries.setdefault(cid, []).append(
+                    key = "__cross_class__" if cross_class else str(cid)
+                    grouped_entries.setdefault(key, []).append(
                         {
                             "obj_idx": obj_idx,
                             "poly_idx": poly_idx,
@@ -303,7 +305,7 @@ def _apply_pca_alignment(objects: List[Dict[str, Any]], steps: Optional[List[Dic
                         }
                     )
 
-            for cid, entries in class_entries.items():
+            for _, entries in grouped_entries.items():
                 if not entries:
                     continue
 

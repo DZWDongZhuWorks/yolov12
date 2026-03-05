@@ -38,7 +38,7 @@ APP_CSS = """
 .mask-steps-table textarea,
 .polygon-steps-table textarea,
 .mask-steps-table td:nth-child(10) > div,
-.polygon-steps-table td:nth-child(7) > div {
+.polygon-steps-table td:nth-child(8) > div {
     max-height: 80px;
     overflow: auto !important;
     white-space: pre-wrap;
@@ -46,8 +46,8 @@ APP_CSS = """
 
 .mask-steps-table th:nth-child(10),
 .mask-steps-table td:nth-child(10),
-.polygon-steps-table th:nth-child(7),
-.polygon-steps-table td:nth-child(7) {
+.polygon-steps-table th:nth-child(8),
+.polygon-steps-table td:nth-child(8) {
     min-width: 320px !important;
     width: 320px !important;
 }
@@ -303,6 +303,10 @@ def app():
                                 step=0.001,
                                 value=0.94,
                             )
+                            polygon_step_pca_cross_class = gr.Checkbox(
+                                label="PCA 跨類別共同計算（限本步驟 classes 範圍）",
+                                value=False,
+                            )
                         polygon_step_class_filter_query = gr.Textbox(
                             label="類別查詢",
                             placeholder="輸入關鍵字或 class id",
@@ -317,13 +321,13 @@ def app():
                                 polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
                         gr.Markdown(
-                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`classes` 欄位可捲動（留空 = 全部類別）。"
+                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`classes` 欄位可捲動（留空 = 全部類別）。"
                         )
                         polygon_opt_steps = gr.Dataframe(
-                            headers=["step", "enabled", "count", "eps_coeff", "min_aspect", "pca_min_cosine", "classes"],
-                            datatype=["str", "bool", "number", "number", "number", "number", "str"],
+                            headers=["step", "enabled", "count", "eps_coeff", "min_aspect", "pca_min_cosine", "pca_cross_class", "classes"],
+                            datatype=["str", "bool", "number", "number", "number", "number", "bool", "str"],
                             row_count=0,
-                            col_count=(7, "fixed"),
+                            col_count=(8, "fixed"),
                             wrap=True,
                             label="Polygon 優化流程",
                             type="array",
@@ -928,6 +932,7 @@ def app():
             eps_coeff_in,
             min_aspect_in,
             pca_min_cosine_in,
+            pca_cross_class_in,
             class_filter_in,
         ):
             if isinstance(class_filter_in, (list, tuple, set)):
@@ -947,7 +952,7 @@ def app():
             else:
                 rows = []
 
-            rows.append([method, True, int(count), eps_coeff_in, min_aspect_in, pca_min_cosine_in, class_filter_snapshot])
+            rows.append([method, True, int(count), eps_coeff_in, min_aspect_in, pca_min_cosine_in, bool(pca_cross_class_in), class_filter_snapshot])
             return rows
 
         polygon_opt_add.click(
@@ -959,6 +964,7 @@ def app():
                 polygon_step_eps_coeff,
                 polygon_step_min_aspect,
                 polygon_step_pca_min_cosine,
+                polygon_step_pca_cross_class,
                 polygon_step_class_filter,
             ],
             outputs=[polygon_opt_steps],
