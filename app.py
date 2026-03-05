@@ -12,7 +12,6 @@ from app_utils.inference import (
     apply_mask_optimizations,
     yolov12_multi_inference_image,
     yolov12_multi_inference_video,
-    yolov12_inference_for_examples,
     get_model_names,
     parse_polygon_steps,
 )
@@ -68,8 +67,6 @@ def app():
                             allow_custom_value=True,
                             multiselect=True,
                         )
-                        with gr.Row():
-                            load_model_btn = gr.Button(value="讀取模型資訊 (取得 class list)", size="sm", variant="secondary")
 
                         image_size = gr.Slider(
                             label="Image Size",
@@ -738,48 +735,54 @@ def app():
             new_global = update_global_selection(query_text, all_choices, current_visible_selection, old_global)
             return new_global
 
-        # ======== 讀取模型資訊 Logic ========
-        def load_models_info_click(model_ids_in):
-            if not model_ids_in:
+        def sync_class_choices_from_model(model_ids_in, selected_items_in, old_choices_in):
+            if isinstance(model_ids_in, str):
+                mids = [model_ids_in]
+            else:
+                mids = [m for m in (model_ids_in or []) if m]
+
+            if not mids:
                 return (
-                    gr.update(choices=[], value=[]), # class_selector
-                    gr.update(choices=[], value=[]), # step_class_filter
-                    gr.update(choices=[], value=[]), # polygon_step_class_filter
-                    [], # class_choices_state
-                    [], # selected_classes_global
-                    [], # step_selected_classes_global
-                    [], # polygon_step_selected_classes_global
+                    gr.update(choices=[], value=[]),
+                    gr.update(choices=[], value=[]),
+                    gr.update(choices=[], value=[]),
+                    [],
+                    [],
+                    [],
+                    [],
+                    gr.update(value=""),
+                    gr.update(value=""),
+                    gr.update(value=""),
                 )
-            
-            # 使用第一個模型來獲取 class list
-            mid = model_ids_in[0] if isinstance(model_ids_in, list) else model_ids_in
-            names = get_model_names(mid)
+
+            names = get_model_names(mids[0])
             if not names:
-                return (
-                    gr.update(),
-                    gr.update(),
-                    gr.update(),
-                    gr.update(),
-                    gr.update(),
-                    gr.update(),
-                    gr.update(),
-                )
-            
-            choices, _ = names_to_choice_list(names)
-            
+                choices = old_choices_in or []
+            else:
+                choices, _ = names_to_choice_list(names)
+
+            if not selected_items_in and choices:
+                selected_items_out = choices
+            else:
+                valid_set = set(choices)
+                selected_items_out = [c for c in (selected_items_in or []) if c in valid_set]
+
             return (
-                gr.update(choices=choices, value=choices),        # class_selector (default all)
-                gr.update(choices=choices, value=choices),        # step_class_filter
-                gr.update(choices=choices, value=choices),        # polygon_step_class_filter
-                choices,                                          # class_choices_state
-                choices,                                          # selected_classes_global (default all)
-                choices,                                          # step_selected_classes_global
-                choices,                                          # polygon_step_selected_classes_global
+                gr.update(choices=choices, value=selected_items_out),
+                gr.update(choices=choices, value=choices),
+                gr.update(choices=choices, value=choices),
+                choices,
+                selected_items_out,
+                choices,
+                choices,
+                gr.update(value=""),
+                gr.update(value=""),
+                gr.update(value=""),
             )
-        
-        load_model_btn.click(
-            fn=load_models_info_click,
-            inputs=[model_ids],
+
+        model_ids.change(
+            fn=sync_class_choices_from_model,
+            inputs=[model_ids, selected_classes_global, class_choices_state],
             outputs=[
                 class_selector,
                 step_class_filter,
@@ -788,7 +791,10 @@ def app():
                 selected_classes_global,
                 step_selected_classes_global,
                 polygon_step_selected_classes_global,
-            ]
+                class_filter_query,
+                step_class_filter_query,
+                polygon_step_class_filter_query,
+            ],
         )
         def add_mask_step(
             steps,
@@ -1179,41 +1185,6 @@ def app():
                 polygon_opt_steps,
             ],
             outputs=[export_files],
-        )
-
-        # ======== 範例（Examples） ========
-        gr.Examples(
-            examples=[
-                [
-                    "ultralytics/assets/bus.jpg",
-                    ["yolov12s.pt", "yolov12m.pt"],
-                    640,
-                    0.25,
-                    "顯示 class name",
-                    True,
-                    True,
-                ],
-                [
-                    "ultralytics/assets/zidane.jpg",
-                    ["yolov12x.pt", "yolov12l.pt"],
-                    640,
-                    0.25,
-                    "顯示 class id",
-                    True,
-                    True,
-                ],
-            ],
-            fn=yolov12_inference_for_examples,
-            inputs=[
-                image,
-                model_ids,
-                image_size,
-                conf_threshold,
-                label_mode,
-                show_boxes,
-                show_masks,
-            ],
-            outputs=[output_gallery],
         )
 
     return demo
