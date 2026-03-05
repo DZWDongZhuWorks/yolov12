@@ -18,273 +18,297 @@ from app_utils.inference import (
 )
 from app_utils.export_utils import export_results_cache
 
+APP_CSS = """
+.app-main-row {
+    align-items: flex-start;
+}
+.control-panel {
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+    position: sticky;
+    top: 16px;
+    padding-right: 8px;
+}
+.result-panel {
+    position: sticky;
+    top: 16px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+}
+"""
+
 
 def app():
-    with gr.Blocks() as demo:
+    with gr.Blocks(css=APP_CSS) as demo:
         # === 初始模型清單（預設 + 已儲存自訂） ===
         initial_choices, initial_saved_custom = load_model_choices()
 
-        with gr.Row():
+        with gr.Row(elem_classes=["app-main-row"]):
             # ======================= 左側：輸入與控制面板 =======================
-            with gr.Column():
-                # 影像 / 影片輸入
-                image = gr.Image(type="pil", label="Image", visible=True)
-                video = gr.Video(label="Video", visible=False)
-                input_type = gr.Radio(
-                    choices=["Image", "Video"],
-                    value="Image",
-                    label="Input Type",
-                )
+            with gr.Column(scale=5, elem_classes=["control-panel"]):
+                with gr.Tabs():
+                    with gr.Tab("輸入 / 模型"):
+                        # 影像 / 影片輸入
+                        image = gr.Image(type="pil", label="Image", visible=True)
+                        video = gr.Video(label="Video", visible=False)
+                        input_type = gr.Radio(
+                            choices=["Image", "Video"],
+                            value="Image",
+                            label="Input Type",
+                        )
 
-                # 記錄自訂模型清單（不包含 DEFAULT_MODELS）
-                saved_models_state = gr.State(value=initial_saved_custom)
+                        # 記錄自訂模型清單（不包含 DEFAULT_MODELS）
+                        saved_models_state = gr.State(value=initial_saved_custom)
 
-                # 多模型 Dropdown（支援自訂、可多選）
-                model_ids = gr.Dropdown(
-                    label="Models (多選比較，最多 5)",
-                    choices=initial_choices,
-                    value=["yolov12m.pt"],
-                    allow_custom_value=True,
-                    multiselect=True,
-                )
-                
-                with gr.Row():
-                    load_model_btn = gr.Button(value="讀取模型資訊 (取得 class list)", size="sm", variant="secondary")
+                        # 多模型 Dropdown（支援自訂、可多選）
+                        model_ids = gr.Dropdown(
+                            label="Models (多選比較，最多 5)",
+                            choices=initial_choices,
+                            value=["yolov12m.pt"],
+                            allow_custom_value=True,
+                            multiselect=True,
+                        )
+                        with gr.Row():
+                            load_model_btn = gr.Button(value="讀取模型資訊 (取得 class list)", size="sm", variant="secondary")
 
+                        image_size = gr.Slider(
+                            label="Image Size",
+                            minimum=320,
+                            maximum=2560,
+                            step=32,
+                            value=640,
+                        )
+                        conf_threshold = gr.Slider(
+                            label="Confidence Threshold",
+                            minimum=0.0,
+                            maximum=1.0,
+                            step=0.01,
+                            value=0.25,
+                        )
+                        device_select = gr.Dropdown(
+                            label="Device",
+                            choices=["auto", "cpu", "cuda:0", "cuda:1", "mps"],
+                            value="auto",
+                            allow_custom_value=True,
+                        )
 
-                image_size = gr.Slider(
-                    label="Image Size",
-                    minimum=320,
-                    maximum=2560,
-                    step=32,
-                    value=640,
-                )
-                conf_threshold = gr.Slider(
-                    label="Confidence Threshold",
-                    minimum=0.0,
-                    maximum=1.0,
-                    step=0.01,
-                    value=0.25,
-                )
-                device_select = gr.Dropdown(
-                    label="Device",
-                    choices=["auto", "cpu", "cuda:0", "cuda:1", "mps"],
-                    value="auto",
-                    allow_custom_value=True,
-                )
+                    with gr.Tab("顯示 / 執行"):
+                        label_mode = gr.Radio(
+                            choices=["隱藏", "顯示 class id", "顯示 class name"],
+                            value="顯示 class name",
+                            label="標籤模式",
+                        )
+                        show_boxes = gr.Checkbox(value=True, label="顯示 bbox 外框")
+                        show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
+                        show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")
+                        show_points = gr.Checkbox(value=False, label="顯示 polygon 點")
+                        show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
 
-                label_mode = gr.Radio(
-                    choices=["隱藏", "顯示 class id", "顯示 class name"],
-                    value="顯示 class name",
-                    label="標籤模式",
-                )
-                show_boxes = gr.Checkbox(value=True, label="顯示 bbox 外框")
-                show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
-                show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")
-                show_points = gr.Checkbox(value=False, label="顯示 polygon 點")
-                show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
-                gr.Markdown("### Mask 優化（先處理 mask 再生成 polygon）")
-                mask_opt_enable = gr.Checkbox(value=False, label="啟用 Mask 優化")
-                with gr.Row():
-                    mask_opt_method = gr.Dropdown(
-                        label="新增步驟",
-                        choices=[
-                            "erode",
-                            "dilate",
-                            "distance_erode",
-                            "distance_dilate",
-                            "split",
-                            "merge",
-                            "blur",
-                            "remove_small",
-                            "fill_holes",
-                        ],
-                        value="erode",
-                    )
-                    mask_opt_count = gr.Slider(
-                        label="次數",
-                        minimum=1,
-                        maximum=10,
-                        step=1,
-                        value=1,
-                    )
-                    mask_opt_add = gr.Button(value="加入步驟", variant="secondary")
-                with gr.Row():
-                    step_morph_kernel = gr.Slider(
-                        label="Morph Kernel (odd)",
-                        minimum=1,
-                        maximum=15,
-                        step=2,
-                        value=3,
-                    )
-                    step_blur_kernel = gr.Slider(
-                        label="Blur Kernel (odd)",
-                        minimum=1,
-                        maximum=15,
-                        step=2,
-                        value=3,
-                    )
-                    step_blur_threshold = gr.Slider(
-                        label="Blur Threshold",
-                        minimum=0.1,
-                        maximum=0.9,
-                        step=0.05,
-                        value=0.5,
-                    )
-                with gr.Row():
-                    step_min_component_area = gr.Slider(
-                        label="Min Component Area",
-                        minimum=0,
-                        maximum=5000,
-                        step=10,
-                        value=0,
-                    )
-                    step_max_hole_area = gr.Slider(
-                        label="Max Hole Area",
-                        minimum=0,
-                        maximum=5000,
-                        step=10,
-                        value=0,
-                    )
-                    step_merge_iou_threshold = gr.Slider(
-                        label="Merge IoU Threshold",
-                        minimum=0.0,
-                        maximum=1.0,
-                        step=0.01,
-                        value=0.1,
-                    )
-                step_class_filter_query = gr.Textbox(
-                    label="類別查詢",
-                    placeholder="輸入關鍵字或 class id",
-                )
-                with gr.Accordion("套用 Classes（不選=全部）", open=False):
-                    step_class_filter = gr.CheckboxGroup(
-                        label="套用 Classes（不選=全部）",
-                        choices=[],
-                        value=[],
-                    )
-                    with gr.Row():
-                        step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
-                        step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
-                gr.Markdown(
-                    "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
-                )
-                mask_opt_steps = gr.Dataframe(
-                    headers=[
-                        "step",
-                        "count",
-                        "morph_kernel",
-                        "blur_kernel",
-                        "blur_threshold",
-                        "min_component_area",
-                        "max_hole_area",
-                        "merge_iou_threshold",
-                        "classes",
-                    ],
-                    datatype=[
-                        "str",
-                        "number",
-                        "number",
-                        "number",
-                        "number",
-                        "number",
-                        "number",
-                        "number",
-                        "str",
-                    ],
-                    row_count=0,
-                    col_count=(9, "fixed"),
-                    wrap=True,
-                    label="Mask 優化流程",
-                    type="array",
-                )
-                gr.Markdown("### Polygon 優化")
-                polygon_opt_enable = gr.Checkbox(value=False, label="啟用 Polygon 優化")
-                with gr.Row():
-                    polygon_opt_method = gr.Dropdown(
-                        label="新增步驟",
-                        choices=["convex_hull", "rdp", "visvalingam_whyatt"],
-                        value="rdp",
-                    )
-                    polygon_opt_count = gr.Slider(
-                        label="次數",
-                        minimum=1,
-                        maximum=10,
-                        step=1,
-                        value=1,
-                    )
-                    polygon_opt_add = gr.Button(value="加入步驟", variant="secondary")
-                polygon_step_eps_coeff = gr.Slider(
-                    label="Step Epsilon Coefficient",
-                    minimum=0.1,
-                    maximum=5.0,
-                    step=0.1,
-                    value=1.0,
-                )
-                polygon_step_class_filter_query = gr.Textbox(
-                    label="類別查詢",
-                    placeholder="輸入關鍵字或 class id",
-                )
-                with gr.Accordion("Polygon 套用 Classes（不選=全部）", open=False):
-                    polygon_step_class_filter = gr.CheckboxGroup(
-                        label="套用 Classes（不選=全部）",
-                        choices=[],
-                        value=[],
-                    )
-                    with gr.Row():
-                        polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
-                        polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
-                gr.Markdown(
-                    "可直接編輯下表調整 Polygon 優化順序、次數與參數（classes 留空 = 全部類別）。"
-                )
-                polygon_opt_steps = gr.Dataframe(
-                    headers=["step", "count", "eps_coeff", "classes"],
-                    datatype=["str", "number", "number", "str"],
-                    row_count=0,
-                    col_count=(4, "fixed"),
-                    wrap=True,
-                    label="Polygon 優化流程",
-                    type="array",
-                )
+                        yolov12_infer = gr.Button(value="Detect Objects (Run)")
 
-                yolov12_infer = gr.Button(value="Detect Objects (Run)")
+                        # 匯出 JSON（polygon）
+                        export_btn = gr.Button(
+                            value="Export JSON (Polygons)",
+                            variant="primary",
+                        )
+                        export_files = gr.Files(label="Exported JSON Files")
 
-                # 匯出 JSON（polygon）
-                export_btn = gr.Button(
-                    value="Export JSON (Polygons)",
-                    variant="primary",
-                )
-                export_files = gr.Files(label="Exported JSON Files")
+                        # 類別篩選（影響渲染與 JSON 匯出）
+                        gr.Markdown("### 類別篩選（預設全選）")
+                        class_filter_query = gr.Textbox(
+                            label="類別查詢",
+                            placeholder="輸入關鍵字或 class id",
+                        )
+                        with gr.Accordion("類別（ID: 名稱）", open=False):
+                            class_selector = gr.CheckboxGroup(
+                                label="類別（ID: 名稱）",
+                                choices=[],
+                                value=[],
+                                interactive=True,
+                            )
+                        with gr.Row():
+                            select_all_btn = gr.Button(value="選擇全選", variant="secondary")
+                            clear_all_btn = gr.Button(value="取消全選", variant="secondary")
 
-                # 類別篩選
-                gr.Markdown("### 類別篩選（預設全選）")
-                class_filter_query = gr.Textbox(
-                    label="類別查詢",
-                    placeholder="輸入關鍵字或 class id",
-                )
-                with gr.Accordion("類別（ID: 名稱）", open=False):
-                    class_selector = gr.CheckboxGroup(
-                        label="類別（ID: 名稱）",
-                        choices=[],
-                        value=[],
-                        interactive=True,
-                    )
-                with gr.Row():
-                    select_all_btn = gr.Button(value="選擇全選", variant="secondary")
-                    clear_all_btn = gr.Button(value="取消全選", variant="secondary")
+                    with gr.Tab("Mask 優化"):
+                        gr.Markdown("### Mask 優化（先處理 mask 再生成 polygon）")
+                        mask_opt_enable = gr.Checkbox(value=False, label="啟用 Mask 優化")
+                        with gr.Row():
+                            mask_opt_method = gr.Dropdown(
+                                label="新增步驟",
+                                choices=[
+                                    "erode",
+                                    "dilate",
+                                    "distance_erode",
+                                    "distance_dilate",
+                                    "split",
+                                    "merge",
+                                    "blur",
+                                    "remove_small",
+                                    "fill_holes",
+                                ],
+                                value="erode",
+                            )
+                            mask_opt_count = gr.Slider(
+                                label="次數",
+                                minimum=1,
+                                maximum=10,
+                                step=1,
+                                value=1,
+                            )
+                            mask_opt_add = gr.Button(value="加入步驟", variant="secondary")
+                        with gr.Row():
+                            step_morph_kernel = gr.Slider(
+                                label="Morph Kernel (odd)",
+                                minimum=1,
+                                maximum=15,
+                                step=2,
+                                value=3,
+                            )
+                            step_blur_kernel = gr.Slider(
+                                label="Blur Kernel (odd)",
+                                minimum=1,
+                                maximum=15,
+                                step=2,
+                                value=3,
+                            )
+                            step_blur_threshold = gr.Slider(
+                                label="Blur Threshold",
+                                minimum=0.1,
+                                maximum=0.9,
+                                step=0.05,
+                                value=0.5,
+                            )
+                        with gr.Row():
+                            step_min_component_area = gr.Slider(
+                                label="Min Component Area",
+                                minimum=0,
+                                maximum=5000,
+                                step=10,
+                                value=0,
+                            )
+                            step_max_hole_area = gr.Slider(
+                                label="Max Hole Area",
+                                minimum=0,
+                                maximum=5000,
+                                step=10,
+                                value=0,
+                            )
+                            step_merge_iou_threshold = gr.Slider(
+                                label="Merge IoU Threshold",
+                                minimum=0.0,
+                                maximum=1.0,
+                                step=0.01,
+                                value=0.1,
+                            )
+                        step_class_filter_query = gr.Textbox(
+                            label="類別查詢",
+                            placeholder="輸入關鍵字或 class id",
+                        )
+                        with gr.Accordion("套用 Classes（全選=全部）", open=False):
+                            step_class_filter = gr.CheckboxGroup(
+                                label="套用 Classes（全選=全部）",
+                                choices=[],
+                                value=[],
+                            )
+                            with gr.Row():
+                                step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
+                                step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                        gr.Markdown(
+                            "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
+                        )
+                        mask_opt_steps = gr.Dataframe(
+                            headers=[
+                                "step",
+                                "count",
+                                "morph_kernel",
+                                "blur_kernel",
+                                "blur_threshold",
+                                "min_component_area",
+                                "max_hole_area",
+                                "merge_iou_threshold",
+                                "classes",
+                            ],
+                            datatype=[
+                                "str",
+                                "number",
+                                "number",
+                                "number",
+                                "number",
+                                "number",
+                                "number",
+                                "number",
+                                "str",
+                            ],
+                            row_count=0,
+                            col_count=(9, "fixed"),
+                            wrap=True,
+                            label="Mask 優化流程",
+                            type="array",
+                        )
+
+                    with gr.Tab("Polygon 優化"):
+                        gr.Markdown("### Polygon 優化")
+                        polygon_opt_enable = gr.Checkbox(value=False, label="啟用 Polygon 優化")
+                        with gr.Row():
+                            polygon_opt_method = gr.Dropdown(
+                                label="新增步驟",
+                                choices=["convex_hull", "rdp", "visvalingam_whyatt"],
+                                value="rdp",
+                            )
+                            polygon_opt_count = gr.Slider(
+                                label="次數",
+                                minimum=1,
+                                maximum=10,
+                                step=1,
+                                value=1,
+                            )
+                            polygon_opt_add = gr.Button(value="加入步驟", variant="secondary")
+                        polygon_step_eps_coeff = gr.Slider(
+                            label="Step Epsilon Coefficient",
+                            minimum=0.1,
+                            maximum=5.0,
+                            step=0.1,
+                            value=1.0,
+                        )
+                        polygon_step_class_filter_query = gr.Textbox(
+                            label="類別查詢",
+                            placeholder="輸入關鍵字或 class id",
+                        )
+                        with gr.Accordion("Polygon 套用 Classes（全選=全部）", open=False):
+                            polygon_step_class_filter = gr.CheckboxGroup(
+                                label="套用 Classes（全選=全部）",
+                                choices=[],
+                                value=[],
+                            )
+                            with gr.Row():
+                                polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
+                                polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                        gr.Markdown(
+                            "可直接編輯下表調整 Polygon 優化順序、次數與參數（classes 留空 = 全部類別）。"
+                        )
+                        polygon_opt_steps = gr.Dataframe(
+                            headers=["step", "count", "eps_coeff", "classes"],
+                            datatype=["str", "number", "number", "str"],
+                            row_count=0,
+                            col_count=(4, "fixed"),
+                            wrap=True,
+                            label="Polygon 優化流程",
+                            type="array",
+                        )
 
                 # 保留目前 choices 狀態（避免僅從元件讀不到 choices）
                 class_choices_state = gr.State(value=[])
                 # 保存當前影像中繼資訊（檔名、寬高）
                 image_meta_state = gr.State(value=None)
-                
+
                 # Global Selection State (To persist selection even when filtered)
                 selected_classes_global = gr.State(value=[])
                 step_selected_classes_global = gr.State(value=[])
                 polygon_step_selected_classes_global = gr.State(value=[])
 
             # ======================= 右側：輸出 =======================
-            with gr.Column():
+            with gr.Column(scale=7, elem_classes=["result-panel"]):
                 # 影像輸出：Gallery 並排
                 output_gallery = gr.Gallery(
                     label="Annotated Images（多模型比較）",
@@ -385,6 +409,38 @@ def app():
             else:
                 allowed_ids = parsed_selected_ids
 
+            # 3-1) 自動取得模型 class list（等同按下「讀取模型資訊」）
+            class_choices_new = class_choices_in or []
+            try:
+                auto_names = get_model_names(mids[0])
+                if auto_names:
+                    class_choices_new, _ = names_to_choice_list(auto_names)
+            except Exception:
+                pass
+
+            if not class_selected_items_in and class_choices_new:
+                class_selected_items_out = class_choices_new
+            else:
+                valid_set = set(class_choices_new)
+                class_selected_items_out = [
+                    c for c in (class_selected_items_in or []) if c in valid_set
+                ]
+
+            class_selector_update = gr.update(
+                choices=class_choices_new,
+                value=class_selected_items_out,
+            )
+            step_class_filter_update = gr.update(
+                choices=class_choices_new,
+                value=class_choices_new,
+            )
+            polygon_step_class_filter_update = gr.update(
+                choices=class_choices_new,
+                value=class_choices_new,
+            )
+            class_filter_query_update = gr.update(value="")
+            step_filter_query_update = gr.update(value="")
+
             # 4) Image 模式
             if input_type_in == "Image":
                 if image_in is None:
@@ -396,16 +452,16 @@ def app():
                         None,
                         gr.update(choices=new_choices, value=mids),
                         new_saved,
-                        gr.update(),  # class_selector
-                        class_choices_in or [],
+                        class_selector_update,
+                        class_choices_new,
                         None,
-                        gr.update(choices=class_choices_in or [], value=[]),
-                        gr.update(choices=class_choices_in or [], value=[]),
-                        gr.update(value=""),
-                        gr.update(value=""),
-                        gr.update(value=[]),
-                        gr.update(value=[]),
-                        gr.update(value=[]),
+                        step_class_filter_update,
+                        polygon_step_class_filter_update,
+                        class_filter_query_update,
+                        step_filter_query_update,
+                        gr.update(value=class_selected_items_out),
+                        gr.update(value=class_choices_new),
+                        gr.update(value=class_choices_new),
                     )
 
                 # 4-1) 多模型推論
@@ -453,44 +509,7 @@ def app():
                         )
                         gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
 
-                # 4-2) 從第一個結果建立類別選單
-                try:
-                    first_result = next(iter(raw_results_cache.values()))[0]
-                    names = getattr(first_result, "names", {}) or {}
-                except Exception:
-                    names = {}
-
-                if names:
-                    class_choices_new, _all_ids = names_to_choice_list(names)
-                else:
-                    class_choices_new = []
-
-                # 若是第一次推論（或尚未選擇任何類別），預設「全選」
-                if not class_selected_items_in and class_choices_new:
-                    class_selected_items_out = class_choices_new
-                else:
-                    # 使用既有勾選（但要過濾掉已不存在的項目）
-                    valid_set = set(class_choices_new)
-                    class_selected_items_out = [
-                        c for c in (class_selected_items_in or []) if c in valid_set
-                    ]
-
-                class_selector_update = gr.update(
-                    choices=class_choices_new,
-                    value=class_selected_items_out,
-                )
-                step_class_filter_update = gr.update(
-                    choices=class_choices_new,
-                    value=class_choices_new,
-                )
-                polygon_step_class_filter_update = gr.update(
-                    choices=class_choices_new,
-                    value=class_choices_new,
-                )
-                class_filter_query_update = gr.update(value="")
-                step_filter_query_update = gr.update(value="")
-
-                # 4-3) 構建 image meta（檔名、寬高）
+                # 4-2) 構建 image meta（檔名、寬高）
                 width = height = 0
                 try:
                     if "first_result" not in locals():
@@ -559,16 +578,16 @@ def app():
                         None,
                         gr.update(choices=new_choices, value=mids),
                         new_saved,
-                        gr.update(),  # class_selector
-                        class_choices_in or [],
+                        class_selector_update,
+                        class_choices_new,
                         None,
-                        gr.update(choices=class_choices_in or [], value=[]),
-                        gr.update(choices=class_choices_in or [], value=[]),
-                        gr.update(value=""),
-                        gr.update(value=""),
-                        gr.update(),  # selected_classes_global
-                        gr.update(),  # step_selected_classes_global
-                        gr.update(),  # polygon_step_selected_classes_global
+                        step_class_filter_update,
+                        polygon_step_class_filter_update,
+                        class_filter_query_update,
+                        step_filter_query_update,
+                        gr.update(value=class_selected_items_out),
+                        gr.update(value=class_choices_new),
+                        gr.update(value=class_choices_new),
                     )
 
                 outs = yolov12_multi_inference_video(
@@ -606,16 +625,16 @@ def app():
                     None,  # raw_results
                     gr.update(choices=new_choices, value=mids),
                     new_saved,
-                    gr.update(),  # class_selector：維持原樣
-                    class_choices_in or [],
+                    class_selector_update,
+                    class_choices_new,
                     None,  # image_meta_state（影片無需）
-                    gr.update(choices=class_choices_in or [], value=[]),
-                    gr.update(choices=class_choices_in or [], value=[]),
-                    gr.update(value=""),
-                    gr.update(value=""),
-                    gr.update(),  # selected_classes_global (維持原樣)
-                    gr.update(),  # step_selected_classes_global (維持原樣)
-                    gr.update(),  # polygon_step_selected_classes_global (維持原樣)
+                    step_class_filter_update,
+                    polygon_step_class_filter_update,
+                    class_filter_query_update,
+                    step_filter_query_update,
+                    gr.update(value=class_selected_items_out),
+                    gr.update(value=class_choices_new),
+                    gr.update(value=class_choices_new),
                 )
 
         yolov12_infer.click(
@@ -737,7 +756,13 @@ def app():
             names = get_model_names(mid)
             if not names:
                 return (
-                    gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
                 )
             
             choices, _ = names_to_choice_list(names)
