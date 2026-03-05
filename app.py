@@ -43,6 +43,14 @@ APP_CSS = """
     overflow: auto !important;
     white-space: pre-wrap;
 }
+
+.mask-steps-table th:nth-child(10),
+.mask-steps-table td:nth-child(10),
+.polygon-steps-table th:nth-child(5),
+.polygon-steps-table td:nth-child(5) {
+    min-width: 320px !important;
+    width: 320px !important;
+}
 """
 
 
@@ -262,7 +270,7 @@ def app():
                         with gr.Row():
                             polygon_opt_method = gr.Dropdown(
                                 label="新增步驟",
-                                choices=["convex_hull", "rdp", "visvalingam_whyatt"],
+                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line"],
                                 value="rdp",
                             )
                             polygon_opt_count = gr.Slider(

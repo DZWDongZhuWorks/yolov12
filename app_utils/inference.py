@@ -164,7 +164,7 @@ def annotate_from_results(
             for seg in polys:
                 pts = np.asarray(seg, dtype=np.int32).reshape(-1, 1, 2)
                 if show_polygons:
-                    cv2.polylines(base, [pts], isClosed=True, color=color, thickness=2)
+                    cv2.polylines(base, [pts], isClosed=len(seg) >= 3, color=color, thickness=2)
                 if show_points:
                     for x, y in np.asarray(seg, dtype=np.int32):
                         cv2.circle(base, (int(x), int(y)), radius=3, color=(255, 255, 255), thickness=1)
@@ -568,7 +568,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
     elif not steps_input:
         return []
 
-    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt"}
+    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line"}
     steps: List[Dict[str, Any]] = []
 
     if isinstance(steps_input, str):

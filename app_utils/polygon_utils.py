@@ -96,6 +96,42 @@ def _simplify_segment(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarra
     return approx.reshape(-1, 2)
 
 
+def _polygon_to_min_area_rect(seg: np.ndarray) -> np.ndarray:
+    if seg.shape[0] < 3:
+        return seg
+
+    rect = cv2.minAreaRect(seg.astype(np.float32))
+    (w, h) = rect[1]
+    if w <= 0 or h <= 0:
+        return seg
+
+    box = cv2.boxPoints(rect)
+    return box.reshape(-1, 2)
+
+
+def _polygon_to_long_axis_line(seg: np.ndarray) -> np.ndarray:
+    if seg.shape[0] < 3:
+        return seg
+
+    rect = cv2.minAreaRect(seg.astype(np.float32))
+    (cx, cy), (w, h), angle = rect
+    if w <= 0 or h <= 0:
+        return seg
+
+    if w >= h:
+        theta = np.deg2rad(angle)
+        length = w
+    else:
+        theta = np.deg2rad(angle + 90.0)
+        length = h
+
+    ux, uy = np.cos(theta), np.sin(theta)
+    half = 0.5 * length
+    p1 = np.array([cx - ux * half, cy - uy * half], dtype=np.float32)
+    p2 = np.array([cx + ux * half, cy + uy * half], dtype=np.float32)
+    return np.vstack([p1, p2])
+
+
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
     if seg.shape[0] <= 3 or not steps:
         return seg
@@ -103,7 +139,7 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = seg
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -111,7 +147,12 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
         count = max(1, int(step.get("count", 1)))
         eps_coeff = float(step.get("eps_coeff", 1.0))
         for _ in range(count):
-            out = _simplify_segment(out, name, eps_coeff)
+            if name == "min_area_rect":
+                out = _polygon_to_min_area_rect(out)
+            elif name == "export_line":
+                out = _polygon_to_long_axis_line(out)
+            else:
+                out = _simplify_segment(out, name, eps_coeff)
             if out.shape[0] <= 3:
                 break
     return out
