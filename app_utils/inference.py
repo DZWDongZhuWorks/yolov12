@@ -495,8 +495,21 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
             for row in iterable:
                 if not row or len(row) < 1:
                     continue
-                name = str(row[0]).strip().lower()
-                count = _coerce_int(row[1] if len(row) > 1 else None, 1)
+                # 支援新舊欄位格式：
+                # - 新版: [enabled, step, count, morph_kernel, blur_kernel, blur_threshold,
+                #         min_component_area, max_hole_area, merge_iou_threshold, classes]
+                # - 舊版: [step, count, morph_kernel, blur_kernel, blur_threshold,
+                #         min_component_area, max_hole_area, merge_iou_threshold, classes]
+                if len(row) >= 10:
+                    enabled = _parse_enabled_cell(row[0])
+                    if not enabled:
+                        continue
+                    base = 1
+                else:
+                    base = 0
+
+                name = str(row[base]).strip().lower()
+                count = _coerce_int(row[base + 1] if len(row) > base + 1 else None, 1)
                 if count <= 0:
                     continue
                 if name == "contour_split":
@@ -513,13 +526,13 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
                     "merge",
                 }:
                     continue
-                morph_kernel = row[2] if len(row) > 2 else DEFAULT_MORPH_KERNEL
-                blur_kernel = row[3] if len(row) > 3 else DEFAULT_BLUR_KERNEL
-                blur_threshold = row[4] if len(row) > 4 else DEFAULT_BLUR_THRESHOLD
-                min_component_area = row[5] if len(row) > 5 else DEFAULT_MIN_COMPONENT_AREA
-                max_hole_area = row[6] if len(row) > 6 else DEFAULT_MAX_HOLE_AREA
-                merge_iou_threshold = row[7] if len(row) > 7 else 0.1
-                classes = row[8] if len(row) > 8 else None
+                morph_kernel = row[base + 2] if len(row) > base + 2 else DEFAULT_MORPH_KERNEL
+                blur_kernel = row[base + 3] if len(row) > base + 3 else DEFAULT_BLUR_KERNEL
+                blur_threshold = row[base + 4] if len(row) > base + 4 else DEFAULT_BLUR_THRESHOLD
+                min_component_area = row[base + 5] if len(row) > base + 5 else DEFAULT_MIN_COMPONENT_AREA
+                max_hole_area = row[base + 6] if len(row) > base + 6 else DEFAULT_MAX_HOLE_AREA
+                merge_iou_threshold = row[base + 7] if len(row) > base + 7 else 0.1
+                classes = row[base + 8] if len(row) > base + 8 else None
                 steps.append(
                     _build_step(
                         name=name,
@@ -536,6 +549,19 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
         except Exception:
             return []
     return steps
+
+
+def _parse_enabled_cell(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    if text in {"", "1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return True
 
 
 DEFAULT_POLYGON_EPS_COEFF = 1.0
@@ -595,14 +621,31 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
         for row in iterable:
             if not row or len(row) < 1:
                 continue
-            name = str(row[0]).strip().lower()
+            # 支援新舊欄位格式：
+            # - 新版: [enabled, step, count, eps_coeff, classes]
+            # - 舊版: [step, count, eps_coeff, classes]
+            if len(row) >= 5:
+                enabled = _parse_enabled_cell(row[0])
+                if not enabled:
+                    continue
+                name_idx = 1
+                count_idx = 2
+                eps_idx = 3
+                classes_idx = 4
+            else:
+                name_idx = 0
+                count_idx = 1
+                eps_idx = 2
+                classes_idx = 3
+
+            name = str(row[name_idx]).strip().lower()
             if name not in valid_names:
                 continue
-            count = _coerce_int(row[1] if len(row) > 1 else 1, 1)
+            count = _coerce_int(row[count_idx] if len(row) > count_idx else 1, 1)
             if count <= 0:
                 continue
-            eps_coeff = row[2] if len(row) > 2 else DEFAULT_POLYGON_EPS_COEFF
-            classes = row[3] if len(row) > 3 else None
+            eps_coeff = row[eps_idx] if len(row) > eps_idx else DEFAULT_POLYGON_EPS_COEFF
+            classes = row[classes_idx] if len(row) > classes_idx else None
             steps.append(
                 _build_polygon_step(
                     name=name,

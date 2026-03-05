@@ -34,6 +34,28 @@ APP_CSS = """
     max-height: calc(100vh - 120px);
     overflow-y: auto;
 }
+
+.step-table-wrap {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 4px;
+}
+
+.step-table-wrap table td:nth-child(1),
+.step-table-wrap table th:nth-child(1) {
+    width: 80px;
+    min-width: 80px;
+}
+
+.step-table-wrap table td:last-child,
+.step-table-wrap table th:last-child {
+    min-width: 220px;
+    max-width: 320px;
+    white-space: nowrap;
+    overflow-x: auto;
+}
 """
 
 
@@ -214,35 +236,38 @@ def app():
                         gr.Markdown(
                             "可直接編輯下表調整順序、次數與參數（classes 留空 = 全部類別）。"
                         )
-                        mask_opt_steps = gr.Dataframe(
-                            headers=[
-                                "step",
-                                "count",
-                                "morph_kernel",
-                                "blur_kernel",
-                                "blur_threshold",
-                                "min_component_area",
-                                "max_hole_area",
-                                "merge_iou_threshold",
-                                "classes",
-                            ],
-                            datatype=[
-                                "str",
-                                "number",
-                                "number",
-                                "number",
-                                "number",
-                                "number",
-                                "number",
-                                "number",
-                                "str",
-                            ],
-                            row_count=0,
-                            col_count=(9, "fixed"),
-                            wrap=True,
-                            label="Mask 優化流程",
-                            type="array",
-                        )
+                        with gr.Group(elem_classes=["step-table-wrap"]):
+                            mask_opt_steps = gr.Dataframe(
+                                headers=[
+                                    "enabled",
+                                    "step",
+                                    "count",
+                                    "morph_kernel",
+                                    "blur_kernel",
+                                    "blur_threshold",
+                                    "min_component_area",
+                                    "max_hole_area",
+                                    "merge_iou_threshold",
+                                    "classes",
+                                ],
+                                datatype=[
+                                    "bool",
+                                    "str",
+                                    "number",
+                                    "number",
+                                    "number",
+                                    "number",
+                                    "number",
+                                    "number",
+                                    "number",
+                                    "str",
+                                ],
+                                row_count=0,
+                                col_count=(10, "fixed"),
+                                wrap=True,
+                                label="Mask 優化流程",
+                                type="array",
+                            )
 
                     with gr.Tab("Polygon 優化"):
                         gr.Markdown("### Polygon 優化")
@@ -284,15 +309,16 @@ def app():
                         gr.Markdown(
                             "可直接編輯下表調整 Polygon 優化順序、次數與參數（classes 留空 = 全部類別）。"
                         )
-                        polygon_opt_steps = gr.Dataframe(
-                            headers=["step", "count", "eps_coeff", "classes"],
-                            datatype=["str", "number", "number", "str"],
-                            row_count=0,
-                            col_count=(4, "fixed"),
-                            wrap=True,
-                            label="Polygon 優化流程",
-                            type="array",
-                        )
+                        with gr.Group(elem_classes=["step-table-wrap"]):
+                            polygon_opt_steps = gr.Dataframe(
+                                headers=["enabled", "step", "count", "eps_coeff", "classes"],
+                                datatype=["bool", "str", "number", "number", "str"],
+                                row_count=0,
+                                col_count=(5, "fixed"),
+                                wrap=True,
+                                label="Polygon 優化流程",
+                                type="array",
+                            )
 
                 # 保留目前 choices 狀態（避免僅從元件讀不到 choices）
                 class_choices_state = gr.State(value=[])
@@ -854,6 +880,7 @@ def app():
                 rows = []
             rows.append(
                 [
+                    True,
                     method,
                     int(count),
                     morph_kernel_in,
@@ -908,7 +935,7 @@ def app():
             else:
                 rows = []
 
-            rows.append([method, int(count), eps_coeff_in, class_filter_snapshot])
+            rows.append([True, method, int(count), eps_coeff_in, class_filter_snapshot])
             return rows
 
         polygon_opt_add.click(
