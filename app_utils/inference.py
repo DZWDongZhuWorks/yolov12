@@ -146,16 +146,16 @@ def annotate_from_results(
     # Ultralytics 內建繪製框 / mask（labels 關掉，自己畫）
     base = filtered.plot(labels=False, boxes=show_boxes, masks=show_masks)
     
-    objects = build_objects_from_result(
-        result,
-        allowed_class_ids=allowed_class_ids,
-        simplify_mode=simplify_mode,
-        simplify_eps_coeff=simplify_eps_coeff,
-        polygon_opt_steps=polygon_opt_steps,
-    )
-    
     # ---- 先畫 polygon 邊界（如果有 mask） ----
-    if show_polygons and getattr(filtered, "masks", None) is not None:
+    if (show_polygons or show_points) and getattr(filtered, "masks", None) is not None:
+        objects = build_objects_from_result(
+            result,  # 需傳入原始 result，因 filtered 屬性可能不完整或對應索引不同
+            allowed_class_ids=allowed_class_ids,
+            simplify_mode=simplify_mode,
+            simplify_eps_coeff=simplify_eps_coeff,
+            polygon_opt_steps=polygon_opt_steps,
+        )
+        
         for obj in objects:
             cid = obj["class_id"]
             polys = obj["polygons"]
@@ -163,10 +163,12 @@ def annotate_from_results(
 
             for seg in polys:
                 pts = np.asarray(seg, dtype=np.int32).reshape(-1, 1, 2)
-                cv2.polylines(base, [pts], isClosed=True, color=color, thickness=2)
+                if show_polygons:
+                    cv2.polylines(base, [pts], isClosed=True, color=color, thickness=2)
                 if show_points:
                     for x, y in np.asarray(seg, dtype=np.int32):
                         cv2.circle(base, (int(x), int(y)), radius=3, color=(255, 255, 255), thickness=1)
+    
     # ---- 再畫 label ----
     if label_mode == "隱藏":
         return base
