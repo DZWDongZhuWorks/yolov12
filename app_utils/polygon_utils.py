@@ -139,7 +139,7 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = seg
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -151,12 +151,120 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
                 out = _polygon_to_min_area_rect(out)
             elif name == "export_line":
                 out = _polygon_to_long_axis_line(out)
+            elif name == "pca":
+                # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
+                continue
             else:
                 out = _simplify_segment(out, name, eps_coeff)
             if out.shape[0] <= 3:
                 break
     return out
 
+
+
+def _line_endpoints(seg: np.ndarray):
+    if seg.ndim != 2 or seg.shape[0] < 2 or seg.shape[1] < 2:
+        return None
+    if seg.shape[0] == 2:
+        return seg.astype(np.float32)
+    # 封閉 ring（首尾相同）則拿前兩點代表線段會有偏差，因此只對 2 點線段做 PCA 對齊
+    return None
+
+
+def _dominant_axis_from_lines(lines: List[np.ndarray]) -> Optional[np.ndarray]:
+    if not lines:
+        return None
+
+    cov = np.zeros((2, 2), dtype=np.float64)
+    for ln in lines:
+        v = (ln[1] - ln[0]).astype(np.float64)
+        n = float(np.linalg.norm(v))
+        if n <= 1e-6:
+            continue
+        u = v / n
+        cov += np.outer(u, u)
+
+    if float(cov.sum()) <= 1e-9:
+        return None
+
+    vals, vecs = np.linalg.eigh(cov)
+    axis = vecs[:, int(np.argmax(vals))]
+    n = float(np.linalg.norm(axis))
+    if n <= 1e-9:
+        return None
+    return (axis / n).astype(np.float32)
+
+
+def _apply_pca_alignment(objects: List[Dict[str, Any]], steps: Optional[List[Dict[str, Any]]]):
+    if not objects or not steps:
+        return
+
+    pca_steps = [st for st in steps if str(st.get("name", "")).strip().lower() == "pca"]
+    if not pca_steps:
+        return
+
+    for step in pca_steps:
+        class_filter = step.get("class_filter")
+        count = max(1, int(step.get("count", 1)))
+        alpha = float(step.get("eps_coeff", 1.0))
+        alpha = max(0.0, min(1.0, alpha))
+
+        for _ in range(count):
+            class_to_lines: Dict[int, List[np.ndarray]] = {}
+            for obj in objects:
+                cid = int(obj.get("class_id", -1))
+                if class_filter is not None and cid not in class_filter:
+                    continue
+                for poly in obj.get("polygons", []):
+                    seg = np.asarray(poly, dtype=np.float32)
+                    line = _line_endpoints(seg)
+                    if line is None:
+                        continue
+                    class_to_lines.setdefault(cid, []).append(line)
+
+            class_axis = {cid: _dominant_axis_from_lines(lines) for cid, lines in class_to_lines.items()}
+
+            for obj in objects:
+                cid = int(obj.get("class_id", -1))
+                axis = class_axis.get(cid)
+                if axis is None:
+                    continue
+                if class_filter is not None and cid not in class_filter:
+                    continue
+
+                new_polys = []
+                for poly in obj.get("polygons", []):
+                    seg = np.asarray(poly, dtype=np.float32)
+                    line = _line_endpoints(seg)
+                    if line is None:
+                        new_polys.append(poly)
+                        continue
+
+                    p1, p2 = line[0], line[1]
+                    center = 0.5 * (p1 + p2)
+                    v = p2 - p1
+                    length = float(np.linalg.norm(v))
+                    if length <= 1e-6:
+                        new_polys.append(poly)
+                        continue
+
+                    u = v / length
+                    if float(np.dot(u, axis)) < 0:
+                        target = -axis
+                    else:
+                        target = axis
+
+                    blended = (1.0 - alpha) * u + alpha * target
+                    bn = float(np.linalg.norm(blended))
+                    if bn <= 1e-6:
+                        new_polys.append(poly)
+                        continue
+                    d = (blended / bn) * (0.5 * length)
+                    n1 = (center - d).astype(float).tolist()
+                    n2 = (center + d).astype(float).tolist()
+                    new_polys.append([n1, n2])
+
+                obj["polygons"] = new_polys
 
 def _close_ring(points: List[List[float]]) -> List[List[float]]:
     """
@@ -282,5 +390,7 @@ def build_objects_from_result(
                 "polygons": polys,
             }
         )
+
+    _apply_pca_alignment(objects, resolved_polygon_steps)
 
     return objects

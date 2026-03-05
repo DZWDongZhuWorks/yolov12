@@ -270,7 +270,7 @@ def app():
                         with gr.Row():
                             polygon_opt_method = gr.Dropdown(
                                 label="新增步驟",
-                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line"],
+                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"],
                                 value="rdp",
                             )
                             polygon_opt_count = gr.Slider(
