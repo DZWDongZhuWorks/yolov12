@@ -171,17 +171,22 @@ def _line_endpoints(seg: np.ndarray):
     return None
 
 
-def _dominant_axis_from_lines(lines: List[np.ndarray]) -> Optional[np.ndarray]:
-    if not lines:
+def _line_unit_direction(line: np.ndarray) -> Optional[np.ndarray]:
+    if line.ndim != 2 or line.shape[0] != 2:
+        return None
+    v = (line[1] - line[0]).astype(np.float64)
+    n = float(np.linalg.norm(v))
+    if n <= 1e-6:
+        return None
+    return (v / n).astype(np.float32)
+
+
+def _dominant_axis_from_units(units: List[np.ndarray]) -> Optional[np.ndarray]:
+    if not units:
         return None
 
     cov = np.zeros((2, 2), dtype=np.float64)
-    for ln in lines:
-        v = (ln[1] - ln[0]).astype(np.float64)
-        n = float(np.linalg.norm(v))
-        if n <= 1e-6:
-            continue
-        u = v / n
+    for u in units:
         cov += np.outer(u, u)
 
     if float(cov.sum()) <= 1e-9:
@@ -193,6 +198,56 @@ def _dominant_axis_from_lines(lines: List[np.ndarray]) -> Optional[np.ndarray]:
     if n <= 1e-9:
         return None
     return (axis / n).astype(np.float32)
+
+
+def _cluster_line_orientations(units: List[np.ndarray], min_cosine: float = 0.94) -> List[Dict[str, Any]]:
+    if not units:
+        return []
+
+    clusters: List[Dict[str, Any]] = []
+
+    for idx, u in enumerate(units):
+        best_i = -1
+        best_score = -1.0
+        for ci, cluster in enumerate(clusters):
+            axis = cluster["axis"]
+            score = float(abs(np.dot(u, axis)))
+            if score > best_score:
+                best_score = score
+                best_i = ci
+
+        if best_i >= 0 and best_score >= min_cosine:
+            clusters[best_i]["members"].append(idx)
+            member_units = [units[i] for i in clusters[best_i]["members"]]
+            axis = _dominant_axis_from_units(member_units)
+            if axis is not None:
+                clusters[best_i]["axis"] = axis
+        else:
+            clusters.append({"members": [idx], "axis": u.copy()})
+
+    # 再做一次指派，讓 greedy 初始分群更穩定
+    if len(clusters) <= 1:
+        return clusters
+
+    refined = [{"members": [], "axis": c["axis"].copy()} for c in clusters]
+    for idx, u in enumerate(units):
+        scores = [float(abs(np.dot(u, c["axis"]))) for c in refined]
+        best_i = int(np.argmax(scores)) if scores else -1
+        if best_i >= 0 and scores[best_i] >= min_cosine:
+            refined[best_i]["members"].append(idx)
+        else:
+            refined.append({"members": [idx], "axis": u.copy()})
+
+    output: List[Dict[str, Any]] = []
+    for cluster in refined:
+        if not cluster["members"]:
+            continue
+        member_units = [units[i] for i in cluster["members"]]
+        axis = _dominant_axis_from_units(member_units)
+        if axis is None:
+            axis = cluster["axis"]
+        output.append({"members": cluster["members"], "axis": axis})
+    return output
 
 
 def _apply_pca_alignment(objects: List[Dict[str, Any]], steps: Optional[List[Dict[str, Any]]]):
@@ -210,61 +265,63 @@ def _apply_pca_alignment(objects: List[Dict[str, Any]], steps: Optional[List[Dic
         alpha = max(0.0, min(1.0, alpha))
 
         for _ in range(count):
-            class_to_lines: Dict[int, List[np.ndarray]] = {}
-            for obj in objects:
+            class_entries: Dict[int, List[Dict[str, Any]]] = {}
+            for obj_idx, obj in enumerate(objects):
                 cid = int(obj.get("class_id", -1))
                 if class_filter is not None and cid not in class_filter:
                     continue
-                for poly in obj.get("polygons", []):
+
+                for poly_idx, poly in enumerate(obj.get("polygons", [])):
                     seg = np.asarray(poly, dtype=np.float32)
                     line = _line_endpoints(seg)
                     if line is None:
                         continue
-                    class_to_lines.setdefault(cid, []).append(line)
+                    unit = _line_unit_direction(line)
+                    if unit is None:
+                        continue
+                    class_entries.setdefault(cid, []).append(
+                        {
+                            "obj_idx": obj_idx,
+                            "poly_idx": poly_idx,
+                            "line": line,
+                            "unit": unit,
+                        }
+                    )
 
-            class_axis = {cid: _dominant_axis_from_lines(lines) for cid, lines in class_to_lines.items()}
-
-            for obj in objects:
-                cid = int(obj.get("class_id", -1))
-                axis = class_axis.get(cid)
-                if axis is None:
+            for cid, entries in class_entries.items():
+                if not entries:
                     continue
-                if class_filter is not None and cid not in class_filter:
-                    continue
 
-                new_polys = []
-                for poly in obj.get("polygons", []):
-                    seg = np.asarray(poly, dtype=np.float32)
-                    line = _line_endpoints(seg)
-                    if line is None:
-                        new_polys.append(poly)
+                units = [e["unit"] for e in entries]
+                clusters = _cluster_line_orientations(units, min_cosine=0.94)
+
+                for cluster in clusters:
+                    axis = cluster.get("axis")
+                    if axis is None:
                         continue
 
-                    p1, p2 = line[0], line[1]
-                    center = 0.5 * (p1 + p2)
-                    v = p2 - p1
-                    length = float(np.linalg.norm(v))
-                    if length <= 1e-6:
-                        new_polys.append(poly)
-                        continue
+                    for member_idx in cluster["members"]:
+                        entry = entries[member_idx]
+                        line = entry["line"]
+                        p1, p2 = line[0], line[1]
+                        center = 0.5 * (p1 + p2)
+                        v = p2 - p1
+                        length = float(np.linalg.norm(v))
+                        if length <= 1e-6:
+                            continue
 
-                    u = v / length
-                    if float(np.dot(u, axis)) < 0:
-                        target = -axis
-                    else:
-                        target = axis
+                        u = v / length
+                        target = axis if float(np.dot(u, axis)) >= 0 else -axis
+                        blended = (1.0 - alpha) * u + alpha * target
+                        bn = float(np.linalg.norm(blended))
+                        if bn <= 1e-6:
+                            continue
 
-                    blended = (1.0 - alpha) * u + alpha * target
-                    bn = float(np.linalg.norm(blended))
-                    if bn <= 1e-6:
-                        new_polys.append(poly)
-                        continue
-                    d = (blended / bn) * (0.5 * length)
-                    n1 = (center - d).astype(float).tolist()
-                    n2 = (center + d).astype(float).tolist()
-                    new_polys.append([n1, n2])
+                        d = (blended / bn) * (0.5 * length)
+                        n1 = (center - d).astype(float).tolist()
+                        n2 = (center + d).astype(float).tolist()
+                        objects[entry["obj_idx"]]["polygons"][entry["poly_idx"]] = [n1, n2]
 
-                obj["polygons"] = new_polys
 
 def _close_ring(points: List[List[float]]) -> List[List[float]]:
     """
