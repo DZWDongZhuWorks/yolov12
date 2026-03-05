@@ -113,6 +113,24 @@ def app():
                         )
                         export_files = gr.Files(label="Exported JSON Files")
 
+
+                        # 類別篩選（影響最終渲染與 JSON 匯出）
+                        gr.Markdown("### 類別篩選（預設全選）")
+                        class_filter_query = gr.Textbox(
+                            label="類別查詢",
+                            placeholder="輸入關鍵字或 class id",
+                        )
+                        with gr.Accordion("類別（ID: 名稱）", open=False):
+                            class_selector = gr.CheckboxGroup(
+                                label="類別（ID: 名稱）",
+                                choices=[],
+                                value=[],
+                                interactive=True,
+                            )
+                        with gr.Row():
+                            select_all_btn = gr.Button(value="選擇全選", variant="secondary")
+                            clear_all_btn = gr.Button(value="取消全選", variant="secondary")
+
                     with gr.Tab("Mask 優化"):
                         gr.Markdown("### Mask 優化（先處理 mask 再生成 polygon）")
                         mask_opt_enable = gr.Checkbox(value=False, label="啟用 Mask 優化")
@@ -280,23 +298,6 @@ def app():
                             type="array",
                         )
 
-                    with gr.Tab("類別篩選"):
-                        # 類別篩選
-                        gr.Markdown("### 類別篩選（預設全選）")
-                        class_filter_query = gr.Textbox(
-                            label="類別查詢",
-                            placeholder="輸入關鍵字或 class id",
-                        )
-                        with gr.Accordion("類別（ID: 名稱）", open=False):
-                            class_selector = gr.CheckboxGroup(
-                                label="類別（ID: 名稱）",
-                                choices=[],
-                                value=[],
-                                interactive=True,
-                            )
-                        with gr.Row():
-                            select_all_btn = gr.Button(value="選擇全選", variant="secondary")
-                            clear_all_btn = gr.Button(value="取消全選", variant="secondary")
 
                 # 保留目前 choices 狀態（避免僅從元件讀不到 choices）
                 class_choices_state = gr.State(value=[])
