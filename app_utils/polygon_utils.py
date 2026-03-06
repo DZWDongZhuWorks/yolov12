@@ -96,6 +96,56 @@ def _simplify_segment(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarra
     return approx.reshape(-1, 2)
 
 
+def _polygon_to_min_area_rect(seg: np.ndarray, min_aspect: float = 0.0) -> np.ndarray:
+    if seg.shape[0] < 3:
+        return seg
+
+    rect = cv2.minAreaRect(seg.astype(np.float32))
+    (w, h) = rect[1]
+    if w <= 0 or h <= 0:
+        return seg
+
+    long_side = max(w, h)
+    short_side = min(w, h)
+    if min_aspect > 0:
+        aspect = float(long_side / (short_side + 1e-6))
+        if aspect < min_aspect:
+            return seg
+
+    box = cv2.boxPoints(rect)
+    return box.reshape(-1, 2)
+
+
+def _polygon_to_long_axis_line(seg: np.ndarray, min_aspect: float = 0.0) -> np.ndarray:
+    if seg.shape[0] < 3:
+        return seg
+
+    rect = cv2.minAreaRect(seg.astype(np.float32))
+    (cx, cy), (w, h), angle = rect
+    if w <= 0 or h <= 0:
+        return seg
+
+    long_side = max(w, h)
+    short_side = min(w, h)
+    if min_aspect > 0:
+        aspect = float(long_side / (short_side + 1e-6))
+        if aspect < min_aspect:
+            return seg
+
+    if w >= h:
+        theta = np.deg2rad(angle)
+        length = w
+    else:
+        theta = np.deg2rad(angle + 90.0)
+        length = h
+
+    ux, uy = np.cos(theta), np.sin(theta)
+    half = 0.5 * length
+    p1 = np.array([cx - ux * half, cy - uy * half], dtype=np.float32)
+    p2 = np.array([cx + ux * half, cy + uy * half], dtype=np.float32)
+    return np.vstack([p1, p2])
+
+
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
     if seg.shape[0] <= 3 or not steps:
         return seg
@@ -103,18 +153,193 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = seg
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
             continue
         count = max(1, int(step.get("count", 1)))
         eps_coeff = float(step.get("eps_coeff", 1.0))
+        min_aspect = max(0.0, float(step.get("min_aspect", 0.0)))
         for _ in range(count):
-            out = _simplify_segment(out, name, eps_coeff)
+            if name == "min_area_rect":
+                out = _polygon_to_min_area_rect(out, min_aspect=min_aspect)
+            elif name == "export_line":
+                out = _polygon_to_long_axis_line(out, min_aspect=min_aspect)
+            elif name == "pca":
+                # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
+                continue
+            else:
+                out = _simplify_segment(out, name, eps_coeff)
             if out.shape[0] <= 3:
                 break
     return out
+
+
+
+def _line_endpoints(seg: np.ndarray):
+    if seg.ndim != 2 or seg.shape[0] < 2 or seg.shape[1] < 2:
+        return None
+    if seg.shape[0] == 2:
+        return seg.astype(np.float32)
+    # 封閉 ring（首尾相同）則拿前兩點代表線段會有偏差，因此只對 2 點線段做 PCA 對齊
+    return None
+
+
+def _line_unit_direction(line: np.ndarray) -> Optional[np.ndarray]:
+    if line.ndim != 2 or line.shape[0] != 2:
+        return None
+    v = (line[1] - line[0]).astype(np.float64)
+    n = float(np.linalg.norm(v))
+    if n <= 1e-6:
+        return None
+    return (v / n).astype(np.float32)
+
+
+def _dominant_axis_from_units(units: List[np.ndarray]) -> Optional[np.ndarray]:
+    if not units:
+        return None
+
+    cov = np.zeros((2, 2), dtype=np.float64)
+    for u in units:
+        cov += np.outer(u, u)
+
+    if float(cov.sum()) <= 1e-9:
+        return None
+
+    vals, vecs = np.linalg.eigh(cov)
+    axis = vecs[:, int(np.argmax(vals))]
+    n = float(np.linalg.norm(axis))
+    if n <= 1e-9:
+        return None
+    return (axis / n).astype(np.float32)
+
+
+def _cluster_line_orientations(units: List[np.ndarray], min_cosine: float = 0.94) -> List[Dict[str, Any]]:
+    if not units:
+        return []
+
+    clusters: List[Dict[str, Any]] = []
+
+    for idx, u in enumerate(units):
+        best_i = -1
+        best_score = -1.0
+        for ci, cluster in enumerate(clusters):
+            axis = cluster["axis"]
+            score = float(abs(np.dot(u, axis)))
+            if score > best_score:
+                best_score = score
+                best_i = ci
+
+        if best_i >= 0 and best_score >= min_cosine:
+            clusters[best_i]["members"].append(idx)
+            member_units = [units[i] for i in clusters[best_i]["members"]]
+            axis = _dominant_axis_from_units(member_units)
+            if axis is not None:
+                clusters[best_i]["axis"] = axis
+        else:
+            clusters.append({"members": [idx], "axis": u.copy()})
+
+    # 再做一次指派，讓 greedy 初始分群更穩定
+    if len(clusters) <= 1:
+        return clusters
+
+    refined = [{"members": [], "axis": c["axis"].copy()} for c in clusters]
+    for idx, u in enumerate(units):
+        scores = [float(abs(np.dot(u, c["axis"]))) for c in refined]
+        best_i = int(np.argmax(scores)) if scores else -1
+        if best_i >= 0 and scores[best_i] >= min_cosine:
+            refined[best_i]["members"].append(idx)
+        else:
+            refined.append({"members": [idx], "axis": u.copy()})
+
+    output: List[Dict[str, Any]] = []
+    for cluster in refined:
+        if not cluster["members"]:
+            continue
+        member_units = [units[i] for i in cluster["members"]]
+        axis = _dominant_axis_from_units(member_units)
+        if axis is None:
+            axis = cluster["axis"]
+        output.append({"members": cluster["members"], "axis": axis})
+    return output
+
+
+def _apply_pca_alignment(objects: List[Dict[str, Any]], steps: Optional[List[Dict[str, Any]]]):
+    if not objects or not steps:
+        return
+
+    pca_steps = [st for st in steps if str(st.get("name", "")).strip().lower() == "pca"]
+    if not pca_steps:
+        return
+
+    for step in pca_steps:
+        class_filter = step.get("class_filter")
+        count = max(1, int(step.get("count", 1)))
+        alpha = float(step.get("eps_coeff", 1.0))
+        alpha = max(0.0, min(1.0, alpha))
+
+        for _ in range(count):
+            cross_class = bool(step.get("pca_cross_class", False))
+            grouped_entries: Dict[str, List[Dict[str, Any]]] = {}
+            for obj_idx, obj in enumerate(objects):
+                cid = int(obj.get("class_id", -1))
+                if class_filter is not None and cid not in class_filter:
+                    continue
+
+                for poly_idx, poly in enumerate(obj.get("polygons", [])):
+                    seg = np.asarray(poly, dtype=np.float32)
+                    line = _line_endpoints(seg)
+                    if line is None:
+                        continue
+                    unit = _line_unit_direction(line)
+                    if unit is None:
+                        continue
+                    key = "__cross_class__" if cross_class else str(cid)
+                    grouped_entries.setdefault(key, []).append(
+                        {
+                            "obj_idx": obj_idx,
+                            "poly_idx": poly_idx,
+                            "line": line,
+                            "unit": unit,
+                        }
+                    )
+
+            for _, entries in grouped_entries.items():
+                if not entries:
+                    continue
+
+                units = [e["unit"] for e in entries]
+                pca_min_cosine = float(step.get("pca_min_cosine", 0.94))
+                pca_min_cosine = max(0.0, min(1.0, pca_min_cosine))
+                clusters = _cluster_line_orientations(units, min_cosine=pca_min_cosine)
+
+                for cluster in clusters:
+                    axis = cluster.get("axis")
+                    if axis is None:
+                        continue
+
+                    for member_idx in cluster["members"]:
+                        entry = entries[member_idx]
+                        line = entry["line"]
+                        p1, p2 = line[0], line[1]
+                        center = 0.5 * (p1 + p2)
+                        v = p2 - p1
+                        length = float(np.linalg.norm(v))
+                        if length <= 1e-6:
+                            continue
+
+                        u = v / length
+                        target = axis if float(np.dot(u, axis)) >= 0 else -axis
+                        blended = (1.0 - alpha) * u + alpha * target
+                        bn = float(np.linalg.norm(blended))
+                        if bn <= 1e-6:
+                            continue
+
+                        d = (blended / bn) * (0.5 * length)
+                        n1 = (center - d).astype(float).tolist()
+                        n2 = (center + d).astype(float).tolist()
+                        objects[entry["obj_idx"]]["polygons"][entry["poly_idx"]] = [n1, n2]
 
 
 def _close_ring(points: List[List[float]]) -> List[List[float]]:
@@ -241,5 +466,7 @@ def build_objects_from_result(
                 "polygons": polys,
             }
         )
+
+    _apply_pca_alignment(objects, resolved_polygon_steps)
 
     return objects

@@ -164,7 +164,7 @@ def annotate_from_results(
             for seg in polys:
                 pts = np.asarray(seg, dtype=np.int32).reshape(-1, 1, 2)
                 if show_polygons:
-                    cv2.polylines(base, [pts], isClosed=True, color=color, thickness=2)
+                    cv2.polylines(base, [pts], isClosed=len(seg) >= 3, color=color, thickness=2)
                 if show_points:
                     for x, y in np.asarray(seg, dtype=np.int32):
                         cv2.circle(base, (int(x), int(y)), radius=3, color=(255, 255, 255), thickness=1)
@@ -547,13 +547,28 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
 
 
 DEFAULT_POLYGON_EPS_COEFF = 1.0
+DEFAULT_POLYGON_MIN_ASPECT = 0.0
+DEFAULT_POLYGON_PCA_MIN_COSINE = 0.94
 
 
-def _build_polygon_step(name: str, count: int, eps_coeff: float = DEFAULT_POLYGON_EPS_COEFF, classes=None) -> Dict[str, Any]:
+def _build_polygon_step(
+    name: str,
+    count: int,
+    eps_coeff: float = DEFAULT_POLYGON_EPS_COEFF,
+    min_aspect: float = DEFAULT_POLYGON_MIN_ASPECT,
+    pca_min_cosine: float = DEFAULT_POLYGON_PCA_MIN_COSINE,
+    pca_cross_class: bool = False,
+    classes=None,
+) -> Dict[str, Any]:
+    pca_cos = _coerce_float(pca_min_cosine, DEFAULT_POLYGON_PCA_MIN_COSINE)
+    pca_cos = max(0.0, min(1.0, pca_cos))
     return {
         "name": name,
         "count": max(1, int(count)),
         "eps_coeff": _coerce_float(eps_coeff, DEFAULT_POLYGON_EPS_COEFF),
+        "min_aspect": max(0.0, _coerce_float(min_aspect, DEFAULT_POLYGON_MIN_ASPECT)),
+        "pca_min_cosine": pca_cos,
+        "pca_cross_class": bool(pca_cross_class),
         "classes": _normalize_class_filter(classes),
     }
 
@@ -568,7 +583,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
     elif not steps_input:
         return []
 
-    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt"}
+    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"}
     steps: List[Dict[str, Any]] = []
 
     if isinstance(steps_input, str):
@@ -589,7 +604,10 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
             if count <= 0:
                 continue
             eps_coeff = _coerce_float(chunks[2] if len(chunks) > 2 else DEFAULT_POLYGON_EPS_COEFF, DEFAULT_POLYGON_EPS_COEFF)
-            steps.append(_build_polygon_step(name=name, count=count, eps_coeff=eps_coeff))
+            min_aspect = _coerce_float(chunks[3] if len(chunks) > 3 else DEFAULT_POLYGON_MIN_ASPECT, DEFAULT_POLYGON_MIN_ASPECT)
+            pca_min_cosine = _coerce_float(chunks[4] if len(chunks) > 4 else DEFAULT_POLYGON_PCA_MIN_COSINE, DEFAULT_POLYGON_PCA_MIN_COSINE)
+            pca_cross_class = str(chunks[5]).lower() in {"1", "true", "yes", "y", "on"} if len(chunks) > 5 else False
+            steps.append(_build_polygon_step(name=name, count=count, eps_coeff=eps_coeff, min_aspect=min_aspect, pca_min_cosine=pca_min_cosine, pca_cross_class=pca_cross_class))
         return steps
 
     iterable = steps_input
@@ -619,12 +637,32 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
             if count <= 0:
                 continue
             eps_coeff = row[count_index + 1] if len(row) > count_index + 1 else DEFAULT_POLYGON_EPS_COEFF
-            classes = row[count_index + 2] if len(row) > count_index + 2 else None
+            if len(row) > count_index + 5:
+                # new columns: step, enabled, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class, classes
+                min_aspect = row[count_index + 2]
+                pca_min_cosine = row[count_index + 3]
+                pca_cross_class = bool(row[count_index + 4]) if row[count_index + 4] is not None else False
+                classes = row[count_index + 5]
+            elif len(row) > count_index + 4:
+                # intermediate columns: step, enabled, count, eps_coeff, min_aspect, pca_min_cosine, classes
+                min_aspect = row[count_index + 2]
+                pca_min_cosine = row[count_index + 3]
+                pca_cross_class = False
+                classes = row[count_index + 4]
+            else:
+                # backward compatibility: old columns were [step, enabled, count, eps_coeff, classes]
+                min_aspect = DEFAULT_POLYGON_MIN_ASPECT
+                pca_min_cosine = DEFAULT_POLYGON_PCA_MIN_COSINE
+                pca_cross_class = False
+                classes = row[count_index + 2] if len(row) > count_index + 2 else None
             steps.append(
                 _build_polygon_step(
                     name=name,
                     count=count,
                     eps_coeff=eps_coeff,
+                    min_aspect=min_aspect,
+                    pca_min_cosine=pca_min_cosine,
+                    pca_cross_class=pca_cross_class,
                     classes=classes,
                 )
             )
