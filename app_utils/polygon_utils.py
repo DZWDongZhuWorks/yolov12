@@ -146,14 +146,99 @@ def _polygon_to_long_axis_line(seg: np.ndarray, min_aspect: float = 0.0) -> np.n
     return np.vstack([p1, p2])
 
 
-def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
-    if seg.shape[0] <= 3 or not steps:
+def _polygon_to_lane_centerline(seg: np.ndarray, min_aspect: float = 0.0, eps_coeff: float = 1.0) -> np.ndarray:
+    """
+    將長條狀 polygon 轉成多點中心線（LineString）。
+    方法：以最長軸方向切片，取每個切片的上下邊界中點。
+    """
+    if seg.shape[0] < 3:
         return seg
 
+    rect = cv2.minAreaRect(seg.astype(np.float32))
+    (cx, cy), (w, h), angle = rect
+    if w <= 0 or h <= 0:
+        return seg
+
+    long_side = max(w, h)
+    short_side = min(w, h)
+    aspect = float(long_side / (short_side + 1e-6))
+    if min_aspect > 0 and aspect < min_aspect:
+        return seg
+
+    if w >= h:
+        theta = np.deg2rad(angle)
+    else:
+        theta = np.deg2rad(angle + 90.0)
+
+    u = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)  # 長軸
+    v = np.array([-u[1], u[0]], dtype=np.float32)  # 法向量
+    c = np.array([cx, cy], dtype=np.float32)
+
+    rel = seg.astype(np.float32) - c
+    ts = rel @ u
+    ns = rel @ v
+
+    # 長條狀物件切片越密，中心線越平順
+    sample_count = int(np.clip(max(8.0, aspect * 4.0), 8, 256))
+    t_samples = np.linspace(float(ts.min()), float(ts.max()), sample_count, dtype=np.float32)
+
+    # 封閉邊集合（最後一點連回第一點）
+    poly_t = np.concatenate([ts, ts[:1]])
+    poly_n = np.concatenate([ns, ns[:1]])
+
+    centers_t: List[float] = []
+    centers_n: List[float] = []
+    for t0 in t_samples:
+        intersections: List[float] = []
+        for i in range(seg.shape[0]):
+            t1, n1 = float(poly_t[i]), float(poly_n[i])
+            t2, n2 = float(poly_t[i + 1]), float(poly_n[i + 1])
+
+            dt = t2 - t1
+            if abs(dt) <= 1e-6:
+                if abs(t0 - t1) <= 1e-6:
+                    intersections.extend([n1, n2])
+                continue
+
+            t_min, t_max = (t1, t2) if t1 <= t2 else (t2, t1)
+            if t0 < t_min or t0 > t_max:
+                continue
+
+            ratio = (float(t0) - t1) / dt
+            intersections.append(n1 + ratio * (n2 - n1))
+
+        if len(intersections) < 2:
+            continue
+
+        intersections = sorted(intersections)
+        centers_t.append(float(t0))
+        centers_n.append(0.5 * (intersections[0] + intersections[-1]))
+
+    if len(centers_t) < 2:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    line_local = np.stack([np.asarray(centers_t, dtype=np.float32), np.asarray(centers_n, dtype=np.float32)], axis=1)
+    # 開放折線簡化（eps_coeff 越大，點越少）
+    threshold_area2 = (float(long_side) * DEFAULT_SIMPLIFY_EPS_RATIO * max(0.1, eps_coeff)) ** 2
+    line_local = _visvalingam_whyatt_open(line_local, threshold_area2)
+    if line_local.shape[0] < 2:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    line_xy = c + np.outer(line_local[:, 0], u) + np.outer(line_local[:, 1], v)
+    return line_xy.astype(np.float32)
+
+
+def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int):
+    if seg.shape[0] <= 3 or not steps:
+        return seg, False
+
     out = seg
+    is_line = False
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "lane_centerline", "pca"}:
+            continue
+        if is_line and name != "pca":
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -166,14 +251,18 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
                 out = _polygon_to_min_area_rect(out, min_aspect=min_aspect)
             elif name == "export_line":
                 out = _polygon_to_long_axis_line(out, min_aspect=min_aspect)
+                is_line = True
+            elif name == "lane_centerline":
+                out = _polygon_to_lane_centerline(out, min_aspect=min_aspect, eps_coeff=eps_coeff)
+                is_line = True
             elif name == "pca":
                 # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
                 continue
             else:
                 out = _simplify_segment(out, name, eps_coeff)
-            if out.shape[0] <= 3:
+            if out.shape[0] <= 2:
                 break
-    return out
+    return out, is_line
 
 
 
@@ -182,8 +271,11 @@ def _line_endpoints(seg: np.ndarray):
         return None
     if seg.shape[0] == 2:
         return seg.astype(np.float32)
-    # 封閉 ring（首尾相同）則拿前兩點代表線段會有偏差，因此只對 2 點線段做 PCA 對齊
-    return None
+    # 開放折線（多點）可用首尾點代表方向；封閉 ring 則忽略
+    first, last = seg[0], seg[-1]
+    if float(np.linalg.norm(first - last)) <= 1e-6:
+        return None
+    return np.vstack([first, last]).astype(np.float32)
 
 
 def _line_unit_direction(line: np.ndarray) -> Optional[np.ndarray]:
@@ -442,8 +534,11 @@ def build_objects_from_result(
                     continue
 
                 arr = _simplify_segment(arr, simplify_mode, simplify_eps_coeff)
-                arr = _apply_polygon_steps(arr, resolved_polygon_steps, int(cid))
-                polys.append(_close_ring(arr.astype(float).tolist()))
+                arr, is_line = _apply_polygon_steps(arr, resolved_polygon_steps, int(cid))
+                if is_line:
+                    polys.append(arr.astype(float).tolist())
+                else:
+                    polys.append(_close_ring(arr.astype(float).tolist()))
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon
             polys.append(
