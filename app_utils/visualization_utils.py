@@ -39,10 +39,12 @@ def draw_polygon_overlay(
     
     # 1. 繪製原始 polygon（半透明綠色邊框）
     for poly in original_polys:
-        if len(poly) < 3:
+        if len(poly) < 2:
             continue
-        pts = np.asarray(poly, dtype=np.int32).reshape(-1, 1, 2)
-        cv2.polylines(overlay, [pts], isClosed=True, color=color_original, thickness=1, lineType=cv2.LINE_AA)
+        arr = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
+        is_ring = arr.shape[0] >= 4 and float(np.linalg.norm(arr[0] - arr[-1])) <= 1e-6
+        pts = arr.astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(overlay, [pts], isClosed=is_ring, color=color_original, thickness=1, lineType=cv2.LINE_AA)
         
         # 顯示原始頂點
         if show_vertices:
@@ -51,17 +53,20 @@ def draw_polygon_overlay(
     
     # 2. 繪製簡化後 polygon（實線 + 半透明填充）
     for poly in simplified_polys:
-        if len(poly) < 3:
+        if len(poly) < 2:
             continue
-        pts = np.asarray(poly, dtype=np.int32).reshape(-1, 1, 2)
-        
-        # 填充半透明
-        temp = overlay.copy()
-        cv2.fillPoly(temp, [pts], color_simplified)
-        cv2.addWeighted(temp, 0.3, overlay, 0.7, 0, overlay)
-        
+        arr = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
+        is_ring = arr.shape[0] >= 4 and float(np.linalg.norm(arr[0] - arr[-1])) <= 1e-6
+        pts = arr.astype(np.int32).reshape(-1, 1, 2)
+
+        if is_ring:
+            # 填充半透明
+            temp = overlay.copy()
+            cv2.fillPoly(temp, [pts], color_simplified)
+            cv2.addWeighted(temp, 0.3, overlay, 0.7, 0, overlay)
+
         # 邊框
-        cv2.polylines(overlay, [pts], isClosed=True, color=color_simplified, thickness=2, lineType=cv2.LINE_AA)
+        cv2.polylines(overlay, [pts], isClosed=is_ring, color=color_simplified, thickness=2, lineType=cv2.LINE_AA)
         
         # 顯示簡化後頂點（更大的圓點）
         if show_vertices:
@@ -70,9 +75,13 @@ def draw_polygon_overlay(
                 cv2.circle(overlay, (int(pt[0]), int(pt[1])), 4, (255, 255, 255), 1)
     
     # 3. 添加標籤
-    if simplified_polys and len(simplified_polys[0]) >= 3:
-        # 使用簡化後 polygon 的中心
-        pts = np.asarray(simplified_polys[0])
+    if simplified_polys and len(simplified_polys[0]) >= 2:
+        pts = np.asarray(simplified_polys[0], dtype=np.float32).reshape(-1, 2)
+        is_ring = pts.shape[0] >= 4 and float(np.linalg.norm(pts[0] - pts[-1])) <= 1e-6
+        if is_ring and pts.shape[0] >= 2:
+            pts = pts[:-1]
+        if pts.shape[0] == 0:
+            return overlay
         cx = int(np.mean(pts[:, 0]))
         cy = int(np.mean(pts[:, 1]))
         

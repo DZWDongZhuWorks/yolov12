@@ -298,7 +298,7 @@ def app():
                                 value=1.0,
                             )
                             polygon_step_min_aspect = gr.Slider(
-                                label="Min Aspect (min_area_rect / export_line)",
+                                label="Min Aspect (min_area_rect / export_line / lane_centerline)",
                                 minimum=0.0,
                                 maximum=20.0,
                                 step=0.1,

@@ -76,12 +76,22 @@ def draw_polygons_on_image(
             if not poly:
                 continue
 
-            pts = np.array(poly, dtype=np.int32).reshape(-1, 2)
+            pts = np.array(poly, dtype=np.float32).reshape(-1, 2)
             num_pts = pts.shape[0]
+            if num_pts < 2:
+                # 只有一點 / 奇怪的資料，略過
+                continue
 
-            if num_pts >= 3:
-                # ------- 多邊形模式 -------
-                pts_poly = pts.reshape((-1, 1, 2))
+            is_ring = (
+                num_pts >= 4
+                and float(np.linalg.norm(pts[0] - pts[-1])) <= 1e-6
+            )
+
+            pts_i = pts.astype(np.int32)
+
+            if is_ring:
+                # ------- 多邊形模式（ring） -------
+                pts_poly = pts_i.reshape((-1, 1, 2))
 
                 # 填色 + 描邊
                 cv2.fillPoly(overlay, [pts_poly], color)
@@ -96,19 +106,17 @@ def draw_polygons_on_image(
                 if not draw_labels:
                     continue
 
-                # 以多邊形中心點放標籤
-                cx = int(np.mean(pts[:, 0]))
-                cy = int(np.mean(pts[:, 1]))
+                # 以多邊形中心點放標籤（去除重複尾點）
+                core = pts_i[:-1] if num_pts >= 2 else pts_i
+                cx = int(np.mean(core[:, 0]))
+                cy = int(np.mean(core[:, 1]))
 
-            elif num_pts == 2:
-                # ------- 線段模式（支援 export-line 後的 2 點線段） -------
-                p1 = tuple(pts[0])
-                p2 = tuple(pts[1])
-
-                cv2.line(
+            else:
+                # ------- 開放折線模式（LineString，多點/2點都支援） -------
+                cv2.polylines(
                     overlay,
-                    p1,
-                    p2,
+                    [pts_i.reshape((-1, 1, 2))],
+                    isClosed=False,
                     color=color,
                     thickness=line_thickness,
                     lineType=cv2.LINE_AA,
@@ -117,12 +125,9 @@ def draw_polygons_on_image(
                 if not draw_labels:
                     continue
 
-                # 以線段中點放標籤
-                cx = int((pts[0, 0] + pts[1, 0]) * 0.5)
-                cy = int((pts[0, 1] + pts[1, 1]) * 0.5)
-            else:
-                # 只有一點 / 奇怪的資料，略過
-                continue
+                # 以首尾中點放標籤
+                cx = int((pts_i[0, 0] + pts_i[-1, 0]) * 0.5)
+                cy = int((pts_i[0, 1] + pts_i[-1, 1]) * 0.5)
 
             # ---- 以下是共用的畫標籤部分 ----
             # 避免文字剛好超出畫面
