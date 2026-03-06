@@ -228,8 +228,15 @@ def app():
                             with gr.Row():
                                 step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                        mask_classes_col_width = gr.Slider(
+                            label="Classes 欄位寬度",
+                            minimum=220,
+                            maximum=900,
+                            step=10,
+                            value=420,
+                        )
                         gr.Markdown(
-                            "可直接編輯下表調整順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 會提供捲動避免過長難讀（留空 = 全部類別）。"
+                            "可直接編輯下表調整順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位預設較寬且可依需求調整（留空 = 全部類別）。"
                         )
                         mask_opt_steps = gr.Dataframe(
                             headers=[
@@ -261,6 +268,7 @@ def app():
                             wrap=True,
                             label="Mask 優化流程",
                             type="array",
+                            column_widths=["120px", "90px", "90px", "120px", "120px", "130px", "150px", "130px", "160px", "420px"],
                             elem_classes=["mask-steps-table"],
                         )
 
@@ -320,6 +328,13 @@ def app():
                             with gr.Row():
                                 polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                        polygon_classes_col_width = gr.Slider(
+                            label="Polygon Classes 欄位寬度",
+                            minimum=220,
+                            maximum=900,
+                            step=10,
+                            value=420,
+                        )
                         gr.Markdown(
                             "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`classes` 欄位可捲動（留空 = 全部類別）。"
                         )
@@ -331,6 +346,7 @@ def app():
                             wrap=True,
                             label="Polygon 優化流程",
                             type="array",
+                            column_widths=["150px", "90px", "90px", "120px", "420px"],
                             elem_classes=["polygon-steps-table"],
                         )
 
@@ -970,7 +986,28 @@ def app():
             outputs=[polygon_opt_steps],
         )
 
-        
+        def update_mask_table_classes_width(width_px):
+            width = int(width_px)
+            return gr.update(column_widths=[
+                "120px", "90px", "90px", "120px", "120px", "130px", "150px", "130px", "160px", f"{width}px"
+            ])
+
+        def update_polygon_table_classes_width(width_px):
+            width = int(width_px)
+            return gr.update(column_widths=["150px", "90px", "90px", "120px", f"{width}px"])
+
+        mask_classes_col_width.change(
+            fn=update_mask_table_classes_width,
+            inputs=[mask_classes_col_width],
+            outputs=[mask_opt_steps],
+        )
+
+        polygon_classes_col_width.change(
+            fn=update_polygon_table_classes_width,
+            inputs=[polygon_classes_col_width],
+            outputs=[polygon_opt_steps],
+        )
+
         # --- Class Filter Logic Wiring ---
         # 1. When Query Changes -> Update UI Choices & Value (Read from Global)
         class_filter_query.change(
