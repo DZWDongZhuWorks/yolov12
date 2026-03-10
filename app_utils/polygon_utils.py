@@ -146,6 +146,200 @@ def _polygon_to_long_axis_line(seg: np.ndarray, min_aspect: float = 0.0) -> np.n
     return np.vstack([p1, p2])
 
 
+def _points_to_lane_line(points: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.ndarray]:
+    """
+    將一組 2D 邊界點擬合成 lane line（多點 LineString）。
+    作法：
+      1) PCA 求主軸 u 與法向 v。
+      2) 將點投影到 (t, s) 座標（t 沿主軸、s 沿法向）。
+      3) 沿 t 分箱，對每箱以 s 的 min/max 中點估計中心線點。
+      4) 依 eps_coeff 對開放折線做輕量簡化。
+    """
+    if points.ndim != 2 or points.shape[0] < 2 or points.shape[1] < 2:
+        return None
+
+    pts = points[:, :2].astype(np.float32)
+    center = pts.mean(axis=0)
+    centered = pts - center
+
+    cov = np.cov(centered.T)
+    if cov.shape != (2, 2):
+        return None
+    vals, vecs = np.linalg.eigh(cov)
+    axis = vecs[:, int(np.argmax(vals))].astype(np.float32)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm <= 1e-6:
+        return None
+    u = axis / axis_norm
+    v = np.array([-u[1], u[0]], dtype=np.float32)
+
+    t = centered @ u
+    s = centered @ v
+    t_min = float(np.min(t))
+    t_max = float(np.max(t))
+    s_min = float(np.min(s))
+    s_max = float(np.max(s))
+    t_range = t_max - t_min
+    s_range = s_max - s_min
+    if t_range <= 1e-6:
+        return None
+
+    aspect = t_range / max(s_range, 1e-3)
+    n_bins = int(np.clip(round(aspect * 8), 8, 128))
+    if n_bins < 2:
+        n_bins = 2
+
+    edges = np.linspace(t_min, t_max, n_bins + 1)
+    centers = []
+
+    for i in range(n_bins):
+        left = edges[i]
+        right = edges[i + 1]
+        if i == n_bins - 1:
+            mask = (t >= left) & (t <= right)
+        else:
+            mask = (t >= left) & (t < right)
+        if not np.any(mask):
+            continue
+
+        t_bin = t[mask]
+        s_bin = s[mask]
+        t_mid = float(np.mean(t_bin))
+        s_mid = 0.5 * (float(np.min(s_bin)) + float(np.max(s_bin)))
+        p = center + t_mid * u + s_mid * v
+        centers.append([float(t_mid), float(p[0]), float(p[1])])
+
+    if len(centers) < 2:
+        p1 = (center + t_min * u).astype(np.float32)
+        p2 = (center + t_max * u).astype(np.float32)
+        return np.vstack([p1, p2])
+
+    centers.sort(key=lambda x: x[0])
+    line = np.asarray([[c[1], c[2]] for c in centers], dtype=np.float32)
+
+    # 開放折線簡化：eps_coeff 越大，簡化越強
+    threshold_area2 = (max(t_range, s_range) * DEFAULT_SIMPLIFY_EPS_RATIO * max(0.1, float(eps_coeff))) ** 2
+    line = _visvalingam_whyatt_open(line, threshold_area2)
+
+    if line.shape[0] < 2:
+        p1 = (center + t_min * u).astype(np.float32)
+        p2 = (center + t_max * u).astype(np.float32)
+        return np.vstack([p1, p2])
+
+    return line
+
+
+
+def _ring_to_centerline_midpairs(seg: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.ndarray]:
+    """
+    由單一封閉 ring 估計中心線（多點）。
+    方法：沿周長參數 s 取樣，並與 s + P/2 的對側點配對取中點。
+    以弧長配對可比「索引對半」更耐受急彎與取樣不均。
+    """
+    if seg.ndim != 2 or seg.shape[1] < 2:
+        return None
+
+    ring = seg[:, :2].astype(np.float32)
+    if ring.shape[0] >= 2 and np.allclose(ring[0], ring[-1]):
+        ring = ring[:-1]
+
+    n = int(ring.shape[0])
+    if n < 8:
+        return None
+
+    closed = np.vstack([ring, ring[0:1]])
+    dif = np.diff(closed, axis=0)
+    seg_len = np.linalg.norm(dif, axis=1)
+    perimeter = float(np.sum(seg_len))
+    if perimeter <= 1e-6:
+        return None
+
+    cum = np.concatenate([[0.0], np.cumsum(seg_len)])  # size n+1, last=perimeter
+
+    def point_at_s(sval: float) -> np.ndarray:
+        s2 = sval % perimeter
+        idx = int(np.searchsorted(cum, s2, side='right') - 1)
+        idx = max(0, min(idx, n - 1))
+        l0 = float(cum[idx])
+        l1 = float(cum[idx + 1])
+        if l1 - l0 <= 1e-9:
+            return closed[idx].astype(np.float32)
+        a = float((s2 - l0) / (l1 - l0))
+        return ((1.0 - a) * closed[idx] + a * closed[idx + 1]).astype(np.float32)
+
+    half = 0.5 * perimeter
+    n_samples = int(np.clip(round(perimeter / 6.0), 16, 256))
+    s_vals = np.linspace(0.0, half, n_samples, endpoint=False)
+
+    mids = []
+    for sv in s_vals:
+        p = point_at_s(float(sv))
+        q = point_at_s(float(sv + half))
+        mids.append(0.5 * (p + q))
+
+    line = np.asarray(mids, dtype=np.float32)
+    if line.shape[0] < 2:
+        return None
+
+    # 輕量簡化，保留急彎幾何
+    x_min, y_min = ring.min(axis=0)
+    x_max, y_max = ring.max(axis=0)
+    size = max(x_max - x_min, y_max - y_min)
+    threshold_area2 = (float(size) * DEFAULT_SIMPLIFY_EPS_RATIO * max(0.01, float(eps_coeff) * 0.1)) ** 2
+    line = _visvalingam_whyatt_open(line, threshold_area2)
+
+    if line.shape[0] < 2:
+        return None
+    return line
+
+
+def _stitch_polylines(lines: List[np.ndarray]) -> Optional[np.ndarray]:
+    if not lines:
+        return None
+    valid = [ln.astype(np.float32) for ln in lines if ln is not None and ln.ndim == 2 and ln.shape[0] >= 2]
+    if not valid:
+        return None
+    # 以最長折線為主幹
+    def _poly_len(a: np.ndarray) -> float:
+        if a.shape[0] < 2:
+            return 0.0
+        return float(np.linalg.norm(np.diff(a, axis=0), axis=1).sum())
+
+    base_idx = int(np.argmax([_poly_len(v) for v in valid]))
+    out = valid.pop(base_idx)
+
+    while valid:
+        best_k, best_mode, best_d = -1, None, float('inf')
+        for k, ln in enumerate(valid):
+            d_ss = float(np.linalg.norm(out[0] - ln[0]))
+            d_se = float(np.linalg.norm(out[0] - ln[-1]))
+            d_es = float(np.linalg.norm(out[-1] - ln[0]))
+            d_ee = float(np.linalg.norm(out[-1] - ln[-1]))
+            modes = [('prepend', False, d_ss), ('prepend', True, d_se), ('append', False, d_es), ('append', True, d_ee)]
+            m = min(modes, key=lambda x: x[2])
+            if m[2] < best_d:
+                best_d = m[2]
+                best_k = k
+                best_mode = m
+
+        ln = valid.pop(best_k)
+        where, rev, _ = best_mode
+        if rev:
+            ln = ln[::-1]
+        if where == 'append':
+            if np.allclose(out[-1], ln[0]):
+                out = np.vstack([out, ln[1:]])
+            else:
+                out = np.vstack([out, ln])
+        else:
+            if np.allclose(ln[-1], out[0]):
+                out = np.vstack([ln[:-1], out])
+            else:
+                out = np.vstack([ln, out])
+
+    return out
+
+
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
     if seg.shape[0] <= 3 or not steps:
         return seg
@@ -153,7 +347,7 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = seg
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -169,6 +363,9 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
             elif name == "pca":
                 # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
                 continue
+            elif name == "polygon_to_lane_line":
+                # 需在 object-level 聚合所有點，此處先略過
+                continue
             else:
                 out = _simplify_segment(out, name, eps_coeff)
             if out.shape[0] <= 3:
@@ -176,14 +373,72 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     return out
 
 
+def _apply_object_lane_line(objects: List[Dict[str, Any]], steps: Optional[List[Dict[str, Any]]]):
+    if not objects or not steps:
+        return
+
+    lane_steps = [st for st in steps if str(st.get("name", "")).strip().lower() == "polygon_to_lane_line"]
+    if not lane_steps:
+        return
+
+    for step in lane_steps:
+        class_filter = step.get("class_filter")
+        count = max(1, int(step.get("count", 1)))
+
+        for _ in range(count):
+            for obj in objects:
+                cid = int(obj.get("class_id", -1))
+                if class_filter is not None and cid not in class_filter:
+                    continue
+
+                polys = obj.get("polygons", [])
+                if not polys:
+                    continue
+
+                all_points: List[List[float]] = []
+                per_ring_lines: List[np.ndarray] = []
+                eps_coeff = float(step.get("eps_coeff", 1.0))
+
+                for poly in polys:
+                    arr = np.asarray(poly, dtype=np.float32)
+                    if arr.ndim != 2 or arr.shape[0] < 2:
+                        continue
+
+                    ring_line = _ring_to_centerline_midpairs(arr, eps_coeff=eps_coeff)
+                    if ring_line is not None and ring_line.shape[0] >= 2:
+                        per_ring_lines.append(ring_line)
+
+                    # fallback aggregation points
+                    if arr.shape[0] >= 2 and np.allclose(arr[0], arr[-1]):
+                        arr = arr[:-1]
+                    if arr.shape[0] < 2:
+                        continue
+                    all_points.extend(arr[:, :2].astype(float).tolist())
+
+                line = _stitch_polylines(per_ring_lines) if per_ring_lines else None
+                if line is None:
+                    if len(all_points) < 2:
+                        continue
+                    line = _points_to_lane_line(np.asarray(all_points, dtype=np.float32), eps_coeff=eps_coeff)
+                if line is None:
+                    continue
+
+                line_points = line.astype(float).tolist()
+                obj["polygons"] = [line_points]
+                obj["line_strings"] = [{"type": "LineString", "coordinates": line_points}]
+
+
 
 def _line_endpoints(seg: np.ndarray):
     if seg.ndim != 2 or seg.shape[0] < 2 or seg.shape[1] < 2:
         return None
+    if np.allclose(seg[0], seg[-1]):
+        # 封閉 ring 不視為線段
+        return None
     if seg.shape[0] == 2:
         return seg.astype(np.float32)
-    # 封閉 ring（首尾相同）則拿前兩點代表線段會有偏差，因此只對 2 點線段做 PCA 對齊
-    return None
+    # 多點開放折線取首尾點作為主方向
+    return np.vstack([seg[0], seg[-1]]).astype(np.float32)
 
 
 def _line_unit_direction(line: np.ndarray) -> Optional[np.ndarray]:
@@ -467,6 +722,7 @@ def build_objects_from_result(
             }
         )
 
+    _apply_object_lane_line(objects, resolved_polygon_steps)
     _apply_pca_alignment(objects, resolved_polygon_steps)
 
     return objects
