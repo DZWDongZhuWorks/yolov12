@@ -39,10 +39,12 @@ def draw_polygon_overlay(
     
     # 1. 繪製原始 polygon（半透明綠色邊框）
     for poly in original_polys:
-        if len(poly) < 3:
+        arr = np.asarray(poly, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[0] < 2:
             continue
-        pts = np.asarray(poly, dtype=np.int32).reshape(-1, 1, 2)
-        cv2.polylines(overlay, [pts], isClosed=True, color=color_original, thickness=1, lineType=cv2.LINE_AA)
+        pts = arr.astype(np.int32).reshape(-1, 1, 2)
+        is_closed = arr.shape[0] >= 3 and np.allclose(arr[0], arr[-1])
+        cv2.polylines(overlay, [pts], isClosed=is_closed, color=color_original, thickness=1, lineType=cv2.LINE_AA)
         
         # 顯示原始頂點
         if show_vertices:
@@ -51,17 +53,20 @@ def draw_polygon_overlay(
     
     # 2. 繪製簡化後 polygon（實線 + 半透明填充）
     for poly in simplified_polys:
-        if len(poly) < 3:
+        arr = np.asarray(poly, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[0] < 2:
             continue
-        pts = np.asarray(poly, dtype=np.int32).reshape(-1, 1, 2)
-        
-        # 填充半透明
-        temp = overlay.copy()
-        cv2.fillPoly(temp, [pts], color_simplified)
-        cv2.addWeighted(temp, 0.3, overlay, 0.7, 0, overlay)
-        
-        # 邊框
-        cv2.polylines(overlay, [pts], isClosed=True, color=color_simplified, thickness=2, lineType=cv2.LINE_AA)
+        pts = arr.astype(np.int32).reshape(-1, 1, 2)
+        is_closed = arr.shape[0] >= 3 and np.allclose(arr[0], arr[-1])
+
+        # 填充半透明（僅封閉 polygon）
+        if is_closed:
+            temp = overlay.copy()
+            cv2.fillPoly(temp, [pts], color_simplified)
+            cv2.addWeighted(temp, 0.3, overlay, 0.7, 0, overlay)
+
+        # 邊框 / 線段
+        cv2.polylines(overlay, [pts], isClosed=is_closed, color=color_simplified, thickness=2, lineType=cv2.LINE_AA)
         
         # 顯示簡化後頂點（更大的圓點）
         if show_vertices:

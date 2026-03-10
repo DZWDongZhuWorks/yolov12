@@ -162,11 +162,15 @@ def annotate_from_results(
             color = tuple(int(v) for v in ucolors(cid, bgr=True))
 
             for seg in polys:
-                pts = np.asarray(seg, dtype=np.int32).reshape(-1, 1, 2)
+                seg_arr = np.asarray(seg, dtype=np.float32)
+                if seg_arr.ndim != 2 or seg_arr.shape[0] < 2:
+                    continue
+                pts = seg_arr.astype(np.int32).reshape(-1, 1, 2)
+                is_closed = seg_arr.shape[0] >= 3 and np.allclose(seg_arr[0], seg_arr[-1])
                 if show_polygons:
-                    cv2.polylines(base, [pts], isClosed=len(seg) >= 3, color=color, thickness=2)
+                    cv2.polylines(base, [pts], isClosed=is_closed, color=color, thickness=2)
                 if show_points:
-                    for x, y in np.asarray(seg, dtype=np.int32):
+                    for x, y in seg_arr.astype(np.int32):
                         cv2.circle(base, (int(x), int(y)), radius=3, color=(255, 255, 255), thickness=1)
     
     # ---- 再畫 label ----

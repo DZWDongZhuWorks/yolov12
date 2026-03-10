@@ -273,6 +273,33 @@ def _extract_ring_path(ring: np.ndarray, start_idx: int, end_idx: int) -> np.nda
     return np.vstack([ring[start_idx:], ring[:end_idx + 1]])
 
 
+def _pick_ring_endpoints_by_axis(ring: np.ndarray) -> Optional[tuple[int, int]]:
+    """以 PCA 主軸決定 ring 中心線的起終點索引（較穩定於急彎）。"""
+    if ring.ndim != 2 or ring.shape[0] < 4:
+        return None
+
+    arr = ring[:, :2].astype(np.float32)
+    center = arr.mean(axis=0)
+    centered = arr - center
+    cov = np.cov(centered.T)
+    if cov.shape != (2, 2):
+        return None
+
+    vals, vecs = np.linalg.eigh(cov)
+    axis = vecs[:, int(np.argmax(vals))].astype(np.float32)
+    n = float(np.linalg.norm(axis))
+    if n <= 1e-6:
+        return None
+    axis = axis / n
+
+    t = centered @ axis
+    i_min = int(np.argmin(t))
+    i_max = int(np.argmax(t))
+    if i_min == i_max:
+        return None
+    return i_min, i_max
+
+
 def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.ndarray]:
     """
     將單一封閉 ring 轉成可跟隨急彎的多點中心線。
@@ -288,19 +315,24 @@ def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.
     if n < 6:
         return None
 
-    # O(N^2) 找 ring 上最遠兩點，作為細長區域近似端點
-    best_i, best_j = -1, -1
-    best_d2 = -1.0
-    for i in range(n):
-        d = arr - arr[i]
-        d2 = d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1]
-        j = int(np.argmax(d2))
-        if float(d2[j]) > best_d2 and j != i:
-            best_d2 = float(d2[j])
-            best_i, best_j = i, j
+    # 優先以主軸投影的兩端點作為起終點，急彎時比單純最遠點更穩定
+    endpoint_pair = _pick_ring_endpoints_by_axis(arr)
+    if endpoint_pair is not None:
+        best_i, best_j = endpoint_pair
+    else:
+        # fallback: O(N^2) 找 ring 上最遠兩點
+        best_i, best_j = -1, -1
+        best_d2 = -1.0
+        for i in range(n):
+            d = arr - arr[i]
+            d2 = d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1]
+            j = int(np.argmax(d2))
+            if float(d2[j]) > best_d2 and j != i:
+                best_d2 = float(d2[j])
+                best_i, best_j = i, j
 
-    if best_i < 0 or best_j < 0:
-        return None
+        if best_i < 0 or best_j < 0:
+            return None
 
     path_a = _extract_ring_path(arr, best_i, best_j)
     path_b = _extract_ring_path(arr, best_j, best_i)
