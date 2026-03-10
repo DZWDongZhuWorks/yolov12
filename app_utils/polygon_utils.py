@@ -146,6 +146,140 @@ def _polygon_to_long_axis_line(seg: np.ndarray, min_aspect: float = 0.0) -> np.n
     return np.vstack([p1, p2])
 
 
+def _merge_nearby_polyline_points(points: np.ndarray, merge_dist: float, protected: np.ndarray) -> np.ndarray:
+    """將空間上相近的 polyline 點合併，並盡量保留端點/轉彎點。"""
+    n = points.shape[0]
+    if n <= 2 or merge_dist <= 0:
+        return points
+
+    merged = [points[0].copy()]
+    merged_protected = [True]
+
+    for i in range(1, n - 1):
+        p = points[i]
+        is_protected = bool(protected[i])
+        d = float(np.linalg.norm(p - merged[-1]))
+
+        if d < merge_dist and (not is_protected) and (not merged_protected[-1]):
+            merged[-1] = 0.5 * (merged[-1] + p)
+            continue
+
+        merged.append(p.copy())
+        merged_protected.append(is_protected)
+
+    merged.append(points[-1].copy())
+    merged_protected.append(True)
+
+    arr = np.asarray(merged, dtype=np.float32)
+    if arr.shape[0] <= 2:
+        return arr
+
+    # second pass: 移除非保護點的近共線小擾動
+    keep = np.ones(arr.shape[0], dtype=bool)
+    prot = np.asarray(merged_protected, dtype=bool)
+    for i in range(1, arr.shape[0] - 1):
+        if prot[i]:
+            continue
+        v1 = arr[i] - arr[i - 1]
+        v2 = arr[i + 1] - arr[i]
+        n1 = float(np.linalg.norm(v1))
+        n2 = float(np.linalg.norm(v2))
+        if n1 <= 1e-6 or n2 <= 1e-6:
+            keep[i] = False
+            continue
+        cos_val = float(np.dot(v1, v2) / (n1 * n2))
+        cos_val = max(-1.0, min(1.0, cos_val))
+        if cos_val > 0.985:
+            keep[i] = False
+    return arr[keep]
+
+
+def _polygon_to_lane_line(seg: np.ndarray, eps_coeff: float = 1.0, min_aspect: float = 0.0) -> np.ndarray:
+    """
+    將長條型 lane-line polygon 轉為 LineString。
+    - 以 minAreaRect 長軸作為主方向
+    - 依 eps_coeff 控制取樣/合併強度（越大越簡化）
+    - 盡量保留端點與明顯轉彎點
+    """
+    if seg.shape[0] < 4:
+        return seg
+
+    rect = cv2.minAreaRect(seg.astype(np.float32))
+    (cx, cy), (w, h), angle = rect
+    if w <= 0 or h <= 0:
+        return seg
+
+    long_side = max(w, h)
+    short_side = min(w, h)
+    aspect = float(long_side / (short_side + 1e-6))
+    if min_aspect > 0 and aspect < min_aspect:
+        return seg
+
+    if w >= h:
+        theta = np.deg2rad(angle)
+    else:
+        theta = np.deg2rad(angle + 90.0)
+    axis = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
+    normal = np.array([-axis[1], axis[0]], dtype=np.float32)
+
+    center = np.array([cx, cy], dtype=np.float32)
+    rel = seg - center
+    t = rel @ axis
+    n = rel @ normal
+
+    eps = max(0.1, float(eps_coeff))
+    bin_step = max(1.0, short_side * eps)
+
+    t_min, t_max = float(np.min(t)), float(np.max(t))
+    if t_max - t_min <= 1e-6:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    bin_count = max(2, int(np.ceil((t_max - t_min) / bin_step)))
+    edges = np.linspace(t_min, t_max, num=bin_count + 1)
+
+    centers: List[np.ndarray] = []
+    for bi in range(bin_count):
+        lo, hi = edges[bi], edges[bi + 1]
+        if bi == bin_count - 1:
+            mask = (t >= lo) & (t <= hi)
+        else:
+            mask = (t >= lo) & (t < hi)
+        if not np.any(mask):
+            continue
+        tm = float(np.mean(t[mask]))
+        nm = float(0.5 * (np.max(n[mask]) + np.min(n[mask])))
+        centers.append(center + tm * axis + nm * normal)
+
+    if len(centers) < 2:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    line = np.asarray(centers, dtype=np.float32)
+
+    # 依向量變化量標記轉彎點（保護點不參與合併）
+    protected = np.zeros(line.shape[0], dtype=bool)
+    protected[0] = True
+    protected[-1] = True
+    for i in range(1, line.shape[0] - 1):
+        v1 = line[i] - line[i - 1]
+        v2 = line[i + 1] - line[i]
+        n1 = float(np.linalg.norm(v1))
+        n2 = float(np.linalg.norm(v2))
+        if n1 <= 1e-6 or n2 <= 1e-6:
+            continue
+        cos_val = float(np.dot(v1, v2) / (n1 * n2))
+        cos_val = max(-1.0, min(1.0, cos_val))
+        turn_deg = float(np.degrees(np.arccos(cos_val)))
+        if turn_deg >= 12.0:
+            protected[i] = True
+
+    merge_dist = max(1.0, short_side * 0.8 * eps)
+    line = _merge_nearby_polyline_points(line, merge_dist=merge_dist, protected=protected)
+
+    if line.shape[0] < 2:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+    return line
+
+
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
     if seg.shape[0] <= 3 or not steps:
         return seg
@@ -153,7 +287,7 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = seg
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "trans_lane_line_polygon"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -166,6 +300,8 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
                 out = _polygon_to_min_area_rect(out, min_aspect=min_aspect)
             elif name == "export_line":
                 out = _polygon_to_long_axis_line(out, min_aspect=min_aspect)
+            elif name == "trans_lane_line_polygon":
+                out = _polygon_to_lane_line(out, eps_coeff=eps_coeff, min_aspect=min_aspect)
             elif name == "pca":
                 # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
                 continue
