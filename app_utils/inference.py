@@ -553,6 +553,7 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
 DEFAULT_POLYGON_EPS_COEFF = 1.0
 DEFAULT_POLYGON_MIN_ASPECT = 0.0
 DEFAULT_POLYGON_PCA_MIN_COSINE = 0.94
+DEFAULT_POLYGON_MERGE_THRESHOLD = 2.0
 
 
 def _build_polygon_step(
@@ -560,6 +561,7 @@ def _build_polygon_step(
     count: int,
     eps_coeff: float = DEFAULT_POLYGON_EPS_COEFF,
     min_aspect: float = DEFAULT_POLYGON_MIN_ASPECT,
+    merge_threshold: float = DEFAULT_POLYGON_MERGE_THRESHOLD,
     pca_min_cosine: float = DEFAULT_POLYGON_PCA_MIN_COSINE,
     pca_cross_class: bool = False,
     classes=None,
@@ -571,6 +573,7 @@ def _build_polygon_step(
         "count": max(1, int(count)),
         "eps_coeff": _coerce_float(eps_coeff, DEFAULT_POLYGON_EPS_COEFF),
         "min_aspect": max(0.0, _coerce_float(min_aspect, DEFAULT_POLYGON_MIN_ASPECT)),
+        "merge_threshold": max(0.0, _coerce_float(merge_threshold, DEFAULT_POLYGON_MERGE_THRESHOLD)),
         "pca_min_cosine": pca_cos,
         "pca_cross_class": bool(pca_cross_class),
         "classes": _normalize_class_filter(classes),
@@ -587,7 +590,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
     elif not steps_input:
         return []
 
-    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line"}
+    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "merge_close_points", "pca", "polygon_to_lane_line"}
     steps: List[Dict[str, Any]] = []
 
     if isinstance(steps_input, str):
@@ -609,9 +612,10 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
                 continue
             eps_coeff = _coerce_float(chunks[2] if len(chunks) > 2 else DEFAULT_POLYGON_EPS_COEFF, DEFAULT_POLYGON_EPS_COEFF)
             min_aspect = _coerce_float(chunks[3] if len(chunks) > 3 else DEFAULT_POLYGON_MIN_ASPECT, DEFAULT_POLYGON_MIN_ASPECT)
-            pca_min_cosine = _coerce_float(chunks[4] if len(chunks) > 4 else DEFAULT_POLYGON_PCA_MIN_COSINE, DEFAULT_POLYGON_PCA_MIN_COSINE)
-            pca_cross_class = str(chunks[5]).lower() in {"1", "true", "yes", "y", "on"} if len(chunks) > 5 else False
-            steps.append(_build_polygon_step(name=name, count=count, eps_coeff=eps_coeff, min_aspect=min_aspect, pca_min_cosine=pca_min_cosine, pca_cross_class=pca_cross_class))
+            merge_threshold = _coerce_float(chunks[4] if len(chunks) > 4 else DEFAULT_POLYGON_MERGE_THRESHOLD, DEFAULT_POLYGON_MERGE_THRESHOLD)
+            pca_min_cosine = _coerce_float(chunks[5] if len(chunks) > 5 else DEFAULT_POLYGON_PCA_MIN_COSINE, DEFAULT_POLYGON_PCA_MIN_COSINE)
+            pca_cross_class = str(chunks[6]).lower() in {"1", "true", "yes", "y", "on"} if len(chunks) > 6 else False
+            steps.append(_build_polygon_step(name=name, count=count, eps_coeff=eps_coeff, min_aspect=min_aspect, merge_threshold=merge_threshold, pca_min_cosine=pca_min_cosine, pca_cross_class=pca_cross_class))
         return steps
 
     iterable = steps_input
@@ -641,8 +645,21 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
             if count <= 0:
                 continue
             eps_coeff = row[count_index + 1] if len(row) > count_index + 1 else DEFAULT_POLYGON_EPS_COEFF
-            if len(row) > count_index + 5:
-                # new columns: step, enabled, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class, classes
+            min_aspect = DEFAULT_POLYGON_MIN_ASPECT
+            merge_threshold = DEFAULT_POLYGON_MERGE_THRESHOLD
+            pca_min_cosine = DEFAULT_POLYGON_PCA_MIN_COSINE
+            pca_cross_class = False
+            classes = None
+
+            if len(row) > count_index + 6:
+                # latest columns: step, enabled, count, eps_coeff, min_aspect, merge_threshold, pca_min_cosine, pca_cross_class, classes
+                min_aspect = row[count_index + 2]
+                merge_threshold = row[count_index + 3]
+                pca_min_cosine = row[count_index + 4]
+                pca_cross_class = bool(row[count_index + 5]) if row[count_index + 5] is not None else False
+                classes = row[count_index + 6]
+            elif len(row) > count_index + 5:
+                # old new-columns (without merge_threshold): step, enabled, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class, classes
                 min_aspect = row[count_index + 2]
                 pca_min_cosine = row[count_index + 3]
                 pca_cross_class = bool(row[count_index + 4]) if row[count_index + 4] is not None else False
@@ -651,20 +668,18 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
                 # intermediate columns: step, enabled, count, eps_coeff, min_aspect, pca_min_cosine, classes
                 min_aspect = row[count_index + 2]
                 pca_min_cosine = row[count_index + 3]
-                pca_cross_class = False
                 classes = row[count_index + 4]
-            else:
-                # backward compatibility: old columns were [step, enabled, count, eps_coeff, classes]
-                min_aspect = DEFAULT_POLYGON_MIN_ASPECT
-                pca_min_cosine = DEFAULT_POLYGON_PCA_MIN_COSINE
-                pca_cross_class = False
-                classes = row[count_index + 2] if len(row) > count_index + 2 else None
+            elif len(row) > count_index + 2:
+                # backward compatibility: [step, enabled, count, eps_coeff, classes]
+                classes = row[count_index + 2]
+
             steps.append(
                 _build_polygon_step(
                     name=name,
                     count=count,
                     eps_coeff=eps_coeff,
                     min_aspect=min_aspect,
+                    merge_threshold=merge_threshold,
                     pca_min_cosine=pca_min_cosine,
                     pca_cross_class=pca_cross_class,
                     classes=classes,

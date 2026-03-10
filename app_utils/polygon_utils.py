@@ -361,6 +361,42 @@ def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.
     return line if line.shape[0] >= 2 else None
 
 
+def _merge_close_points(seg: np.ndarray, threshold: float) -> np.ndarray:
+    """合併相鄰距離小於 threshold 的點。"""
+    if seg.ndim != 2 or seg.shape[0] < 2 or threshold <= 0:
+        return seg
+
+    pts = seg[:, :2].astype(np.float32)
+    if pts.shape[0] <= 2:
+        return pts
+
+    # 3 點以上視為 polygon ring 近鄰合併（含首尾相鄰）
+    is_closed = bool(np.allclose(pts[0], pts[-1]))
+    core = pts[:-1] if is_closed else pts
+    if core.shape[0] < 3:
+        return pts
+
+    changed = True
+    work = core.copy()
+    while changed and work.shape[0] > 3:
+        changed = False
+        n = work.shape[0]
+        remove = set()
+        for i in range(n):
+            j = (i + 1) % n
+            d = float(np.linalg.norm(work[i] - work[j]))
+            if d < threshold:
+                rm = j if j != 0 else i
+                remove.add(rm)
+        if remove:
+            keep = [idx for idx in range(n) if idx not in remove]
+            if len(keep) >= 3:
+                work = work[keep]
+                changed = True
+
+    return np.vstack([work, work[0]]) if is_closed else work
+
+
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
     if seg.shape[0] <= 3 or not steps:
         return seg
@@ -368,7 +404,7 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = seg
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "merge_close_points", "pca", "polygon_to_lane_line"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -381,6 +417,9 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
                 out = _polygon_to_min_area_rect(out, min_aspect=min_aspect)
             elif name == "export_line":
                 out = _polygon_to_long_axis_line(out, min_aspect=min_aspect)
+            elif name == "merge_close_points":
+                merge_threshold = max(0.0, float(step.get("merge_threshold", 2.0)))
+                out = _merge_close_points(out, threshold=merge_threshold)
             elif name == "pca":
                 # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
                 continue

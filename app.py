@@ -278,7 +278,7 @@ def app():
                         with gr.Row():
                             polygon_opt_method = gr.Dropdown(
                                 label="新增步驟",
-                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "polygon_to_lane_line", "pca"],
+                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "merge_close_points", "polygon_to_lane_line", "pca"],
                                 value="rdp",
                             )
                             polygon_opt_count = gr.Slider(
@@ -303,6 +303,13 @@ def app():
                                 maximum=20.0,
                                 step=0.1,
                                 value=0.0,
+                            )
+                            polygon_step_merge_threshold = gr.Slider(
+                                label="Merge Distance Threshold (merge_close_points)",
+                                minimum=0.0,
+                                maximum=20.0,
+                                step=0.1,
+                                value=2.0,
                             )
                             polygon_step_pca_min_cosine = gr.Slider(
                                 label="PCA Min Cosine (方向分群門檻)",
@@ -336,17 +343,17 @@ def app():
                             value=420,
                         )
                         gr.Markdown(
-                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam、polygon_to_lane_line 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`classes` 欄位可捲動（留空 = 全部類別）。"
+                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam、polygon_to_lane_line 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`merge_threshold` 用於 merge_close_points；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`classes` 欄位可捲動（留空 = 全部類別）。"
                         )
                         polygon_opt_steps = gr.Dataframe(
-                            headers=["step", "enabled", "count", "eps_coeff", "min_aspect", "pca_min_cosine", "pca_cross_class", "classes"],
-                            datatype=["str", "bool", "number", "number", "number", "number", "bool", "str"],
+                            headers=["step", "enabled", "count", "eps_coeff", "min_aspect", "merge_threshold", "pca_min_cosine", "pca_cross_class", "classes"],
+                            datatype=["str", "bool", "number", "number", "number", "number", "number", "bool", "str"],
                             row_count=0,
-                            col_count=(8, "fixed"),
+                            col_count=(9, "fixed"),
                             wrap=True,
                             label="Polygon 優化流程",
                             type="array",
-                            column_widths=["150px", "90px", "90px", "120px", "420px"],
+                            column_widths=["150px", "90px", "90px", "120px", "120px", "140px", "140px", "120px", "420px"],
                             elem_classes=["polygon-steps-table"],
                         )
 
@@ -947,6 +954,7 @@ def app():
             count,
             eps_coeff_in,
             min_aspect_in,
+            merge_threshold_in,
             pca_min_cosine_in,
             pca_cross_class_in,
             class_filter_in,
@@ -968,7 +976,7 @@ def app():
             else:
                 rows = []
 
-            rows.append([method, True, int(count), eps_coeff_in, min_aspect_in, pca_min_cosine_in, bool(pca_cross_class_in), class_filter_snapshot])
+            rows.append([method, True, int(count), eps_coeff_in, min_aspect_in, merge_threshold_in, pca_min_cosine_in, bool(pca_cross_class_in), class_filter_snapshot])
             return rows
 
         polygon_opt_add.click(
@@ -979,6 +987,7 @@ def app():
                 polygon_opt_count,
                 polygon_step_eps_coeff,
                 polygon_step_min_aspect,
+                polygon_step_merge_threshold,
                 polygon_step_pca_min_cosine,
                 polygon_step_pca_cross_class,
                 polygon_step_class_filter,
@@ -994,7 +1003,7 @@ def app():
 
         def update_polygon_table_classes_width(width_px):
             width = int(width_px)
-            return gr.update(column_widths=["150px", "90px", "90px", "120px", f"{width}px"])
+            return gr.update(column_widths=["150px", "90px", "90px", "120px", "120px", "140px", "140px", "120px", f"{width}px"])
 
         mask_classes_col_width.change(
             fn=update_mask_table_classes_width,
