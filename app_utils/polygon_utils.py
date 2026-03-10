@@ -146,6 +146,161 @@ def _polygon_to_long_axis_line(seg: np.ndarray, min_aspect: float = 0.0) -> np.n
     return np.vstack([p1, p2])
 
 
+def _signed_turn_angle_deg(v1: np.ndarray, v2: np.ndarray) -> float:
+    n1 = float(np.linalg.norm(v1))
+    n2 = float(np.linalg.norm(v2))
+    if n1 <= 1e-6 or n2 <= 1e-6:
+        return 0.0
+    a = v1 / n1
+    b = v2 / n2
+    dot = float(np.clip(np.dot(a, b), -1.0, 1.0))
+    cross = float(a[0] * b[1] - a[1] * b[0])
+    return float(np.degrees(np.arctan2(cross, dot)))
+
+
+def _ring_turn_keypoint_projections(seg: np.ndarray, axis: np.ndarray, center: np.ndarray, angle_deg: float = 20.0) -> List[float]:
+    n = seg.shape[0]
+    if n < 5:
+        return []
+
+    projections: List[float] = []
+    for i in range(n):
+        p_prev = seg[(i - 1) % n]
+        p = seg[i]
+        p_next = seg[(i + 1) % n]
+        v1 = p - p_prev
+        v2 = p_next - p
+        turn = abs(_signed_turn_angle_deg(v1, v2))
+        if turn >= angle_deg:
+            projections.append(float(np.dot((p - center), axis)))
+    return projections
+
+
+def _dedup_sorted_scalars(values: List[float], min_gap: float) -> List[float]:
+    if not values:
+        return []
+    ordered = sorted(values)
+    output = [ordered[0]]
+    for v in ordered[1:]:
+        if abs(v - output[-1]) >= min_gap:
+            output.append(v)
+    return output
+
+
+def _polyline_simplify_keep_anchors(points: np.ndarray, anchors: set, dist_threshold: float) -> np.ndarray:
+    if points.shape[0] <= 2:
+        return points
+
+    keep = np.zeros(points.shape[0], dtype=bool)
+    for idx in anchors:
+        if 0 <= idx < points.shape[0]:
+            keep[idx] = True
+    keep[0] = True
+    keep[-1] = True
+
+    changed = True
+    while changed:
+        changed = False
+        indices = np.where(keep)[0]
+        if len(indices) <= 2:
+            break
+        for i in range(len(indices) - 1):
+            s, e = int(indices[i]), int(indices[i + 1])
+            if e - s <= 1:
+                continue
+            a, b = points[s], points[e]
+            ab = b - a
+            denom = float(np.dot(ab, ab))
+            if denom <= 1e-9:
+                continue
+
+            segment_idx = np.arange(s + 1, e)
+            ap = points[segment_idx] - a
+            t = np.clip((ap @ ab) / denom, 0.0, 1.0)
+            proj = a + np.outer(t, ab)
+            d = np.linalg.norm(points[segment_idx] - proj, axis=1)
+            max_i = int(np.argmax(d))
+            if float(d[max_i]) > dist_threshold:
+                keep[segment_idx[max_i]] = True
+                changed = True
+
+    return points[keep]
+
+
+def _polygon_to_trsnd_lane_line(seg: np.ndarray, min_aspect: float = 0.0, eps_coeff: float = 1.0) -> np.ndarray:
+    if seg.shape[0] < 6:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    rect = cv2.minAreaRect(seg.astype(np.float32))
+    (_, _), (w, h), _ = rect
+    if w <= 0 or h <= 0:
+        return seg
+
+    long_side = max(w, h)
+    short_side = min(w, h)
+    aspect = float(long_side / (short_side + 1e-6))
+    if min_aspect > 0 and aspect < min_aspect:
+        return seg
+
+    pts = seg.astype(np.float32)
+    center = pts.mean(axis=0)
+    centered = pts - center
+    cov = centered.T @ centered
+    vals, vecs = np.linalg.eigh(cov)
+    axis = vecs[:, int(np.argmax(vals))].astype(np.float32)
+    axis /= max(float(np.linalg.norm(axis)), 1e-6)
+
+    t = (centered @ axis).astype(np.float32)
+    t_min, t_max = float(t.min()), float(t.max())
+    if t_max - t_min <= 1e-5:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    k = int(np.clip(round(np.sqrt(len(pts)) * 2.0), 6, 36))
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-4)
+    compactness, _labels, centers_1d = cv2.kmeans(t.reshape(-1, 1), k, None, criteria, 2, cv2.KMEANS_PP_CENTERS)
+    _ = compactness
+    kmeans_ts = [float(v[0]) for v in centers_1d]
+
+    turn_threshold = float(np.clip(18.0 / max(0.5, eps_coeff), 12.0, 30.0))
+    corner_ts = _ring_turn_keypoint_projections(pts, axis, center, angle_deg=turn_threshold)
+    knots = _dedup_sorted_scalars([t_min, t_max] + kmeans_ts + corner_ts, min_gap=(t_max - t_min) / 80.0)
+
+    if len(knots) < 2:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    neighbor_count = max(4, min(16, len(pts) // 10))
+    line_pts: List[np.ndarray] = []
+    anchor_ids: set = {0, len(knots) - 1}
+    for idx, knot_t in enumerate(knots):
+        nearest = np.argsort(np.abs(t - knot_t))[:neighbor_count]
+        knot_point = pts[nearest].mean(axis=0)
+        line_pts.append(knot_point.astype(np.float32))
+        if any(abs(knot_t - c) <= (t_max - t_min) / 120.0 for c in corner_ts):
+            anchor_ids.add(idx)
+
+    polyline = np.vstack(line_pts)
+    d = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
+    keep = np.hstack([[True], d > 1e-4])
+    polyline = polyline[keep]
+    if polyline.shape[0] < 2:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    remap = {}
+    nidx = 0
+    for oid, kf in enumerate(keep):
+        if kf:
+            remap[oid] = nidx
+            nidx += 1
+    remapped_anchors = {remap[i] for i in anchor_ids if i in remap}
+
+    x_min, y_min = pts.min(axis=0)
+    x_max, y_max = pts.max(axis=0)
+    scale = max(float(x_max - x_min), float(y_max - y_min), 1.0)
+    dist_threshold = max(0.8, scale * 0.01 * max(0.5, eps_coeff))
+    simplified = _polyline_simplify_keep_anchors(polyline, remapped_anchors, dist_threshold)
+    return simplified.astype(np.float32)
+
+
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
     if seg.shape[0] <= 3 or not steps:
         return seg
@@ -153,7 +308,7 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = seg
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "trsnd_lane_line_polygon", "pca"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -166,6 +321,8 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
                 out = _polygon_to_min_area_rect(out, min_aspect=min_aspect)
             elif name == "export_line":
                 out = _polygon_to_long_axis_line(out, min_aspect=min_aspect)
+            elif name == "trsnd_lane_line_polygon":
+                out = _polygon_to_trsnd_lane_line(out, min_aspect=min_aspect, eps_coeff=eps_coeff)
             elif name == "pca":
                 # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
                 continue

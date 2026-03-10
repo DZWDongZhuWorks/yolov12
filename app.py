@@ -278,7 +278,7 @@ def app():
                         with gr.Row():
                             polygon_opt_method = gr.Dropdown(
                                 label="新增步驟",
-                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"],
+                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "trsnd_lane_line_polygon", "pca"],
                                 value="rdp",
                             )
                             polygon_opt_count = gr.Slider(
@@ -336,7 +336,7 @@ def app():
                             value=420,
                         )
                         gr.Markdown(
-                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`classes` 欄位可捲動（留空 = 全部類別）。"
+                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line/trsnd_lane_line_polygon；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`classes` 欄位可捲動（留空 = 全部類別）。"
                         )
                         polygon_opt_steps = gr.Dataframe(
                             headers=["step", "enabled", "count", "eps_coeff", "min_aspect", "pca_min_cosine", "pca_cross_class", "classes"],
