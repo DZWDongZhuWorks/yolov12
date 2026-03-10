@@ -146,6 +146,156 @@ def _polygon_to_long_axis_line(seg: np.ndarray, min_aspect: float = 0.0) -> np.n
     return np.vstack([p1, p2])
 
 
+def _point_line_distance(point: np.ndarray, line_start: np.ndarray, line_end: np.ndarray) -> float:
+    line = line_end - line_start
+    denom = float(np.dot(line, line))
+    if denom <= 1e-9:
+        return float(np.linalg.norm(point - line_start))
+    t = float(np.dot(point - line_start, line) / denom)
+    proj = line_start + t * line
+    return float(np.linalg.norm(point - proj))
+
+
+def _detect_turn_point_indices(points: np.ndarray, angle_threshold_deg: float = 25.0) -> set:
+    if points.ndim != 2 or points.shape[0] < 3:
+        return set()
+
+    protected = set()
+    threshold = np.deg2rad(angle_threshold_deg)
+    for i in range(1, points.shape[0] - 1):
+        v1 = points[i] - points[i - 1]
+        v2 = points[i + 1] - points[i]
+        n1 = float(np.linalg.norm(v1))
+        n2 = float(np.linalg.norm(v2))
+        if n1 <= 1e-6 or n2 <= 1e-6:
+            continue
+        cos_theta = float(np.dot(v1 / n1, v2 / n2))
+        cos_theta = max(-1.0, min(1.0, cos_theta))
+        angle = float(np.arccos(cos_theta))
+        if angle >= threshold:
+            protected.add(i)
+    return protected
+
+
+def _simplify_open_polyline_with_protection(points: np.ndarray, epsilon: float, protected_indices: set) -> np.ndarray:
+    if points.ndim != 2 or points.shape[0] <= 2 or epsilon <= 0:
+        return points
+
+    n = points.shape[0]
+    must_keep = {idx for idx in protected_indices if 0 <= idx < n}
+    must_keep.add(0)
+    must_keep.add(n - 1)
+
+    def _rdp(i: int, j: int) -> List[int]:
+        if j <= i + 1:
+            return [i, j]
+
+        max_dist = -1.0
+        max_idx = -1
+        for k in range(i + 1, j):
+            dist = _point_line_distance(points[k], points[i], points[j])
+            if dist > max_dist:
+                max_dist = dist
+                max_idx = k
+
+        inner_protected = [k for k in sorted(must_keep) if i < k < j]
+        if max_idx > 0 and max_dist > epsilon:
+            left = _rdp(i, max_idx)
+            right = _rdp(max_idx, j)
+            return left[:-1] + right
+
+        if inner_protected:
+            out = [i]
+            prev = i
+            for p in inner_protected:
+                part = _rdp(prev, p)
+                out.extend(part[1:])
+                prev = p
+            tail = _rdp(prev, j)
+            out.extend(tail[1:])
+            return out
+
+        return [i, j]
+
+    kept = _rdp(0, n - 1)
+    unique_kept = sorted(set(kept))
+    return points[unique_kept]
+
+
+def _polygon_to_lane_line(seg: np.ndarray, eps_coeff: float = 1.0, min_aspect: float = 0.0) -> np.ndarray:
+    if seg.shape[0] < 4:
+        return seg
+
+    ring = seg.astype(np.float32)
+    if np.allclose(ring[0], ring[-1]):
+        ring = ring[:-1]
+    if ring.shape[0] < 4:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    rect = cv2.minAreaRect(ring)
+    (_, _), (w, h), angle = rect
+    if w <= 0 or h <= 0:
+        return seg
+
+    long_side = max(w, h)
+    short_side = min(w, h)
+    aspect = float(long_side / (short_side + 1e-6))
+    if min_aspect > 0 and aspect < min_aspect:
+        return seg
+
+    if w >= h:
+        theta = np.deg2rad(angle)
+    else:
+        theta = np.deg2rad(angle + 90.0)
+
+    axis = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
+    normal = np.array([-axis[1], axis[0]], dtype=np.float32)
+    center = ring.mean(axis=0)
+
+    rel = ring - center
+    t = rel @ axis
+    s = rel @ normal
+    t_min, t_max = float(t.min()), float(t.max())
+    t_span = max(1e-6, t_max - t_min)
+
+    simplify_strength = max(0.1, float(eps_coeff))
+    keep_ratio = max(0.15, min(0.9, 1.0 / (1.0 + 0.6 * simplify_strength)))
+    target_points = int(max(4, min(ring.shape[0], round(ring.shape[0] * keep_ratio))))
+
+    bins = np.linspace(t_min, t_max, num=target_points)
+    lane_points: List[np.ndarray] = []
+    for idx in range(len(bins) - 1):
+        left, right = bins[idx], bins[idx + 1]
+        if idx == len(bins) - 2:
+            mask = (t >= left) & (t <= right)
+        else:
+            mask = (t >= left) & (t < right)
+        if not np.any(mask):
+            continue
+        t_center = float(t[mask].mean())
+        s_center = float(np.median(s[mask]))
+        lane_points.append(center + axis * t_center + normal * s_center)
+
+    if len(lane_points) < 2:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    line = np.asarray(lane_points, dtype=np.float32)
+    order = np.argsort(line @ axis)
+    line = line[order]
+
+    dedup = [line[0]]
+    for p in line[1:]:
+        if float(np.linalg.norm(p - dedup[-1])) > 1e-3:
+            dedup.append(p)
+    line = np.asarray(dedup, dtype=np.float32)
+    if line.shape[0] < 2:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    protected = _detect_turn_point_indices(line, angle_threshold_deg=25.0)
+    epsilon = t_span * DEFAULT_SIMPLIFY_EPS_RATIO * max(0.1, float(eps_coeff))
+    return _simplify_open_polyline_with_protection(line, epsilon=epsilon, protected_indices=protected)
+
+
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
     if seg.shape[0] <= 3 or not steps:
         return seg
@@ -153,7 +303,7 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = seg
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "trans_lane_line_polygon"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -166,6 +316,8 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
                 out = _polygon_to_min_area_rect(out, min_aspect=min_aspect)
             elif name == "export_line":
                 out = _polygon_to_long_axis_line(out, min_aspect=min_aspect)
+            elif name == "trans_lane_line_polygon":
+                out = _polygon_to_lane_line(out, eps_coeff=eps_coeff, min_aspect=min_aspect)
             elif name == "pca":
                 # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
                 continue
@@ -355,6 +507,19 @@ def _close_ring(points: List[List[float]]) -> List[List[float]]:
     return points + [first]
 
 
+def _step_exports_open_polyline(steps: Optional[List[Dict[str, Any]]], class_id: int) -> bool:
+    if not steps:
+        return False
+    for step in steps:
+        name = str(step.get("name", "")).strip().lower()
+        if name not in {"export_line", "trans_lane_line_polygon"}:
+            continue
+        class_filter = step.get("class_filter")
+        if class_filter is None or class_id in class_filter:
+            return True
+    return False
+
+
 def build_objects_from_result(
     result,
     allowed_class_ids: Optional[List[int]] = None,
@@ -443,7 +608,10 @@ def build_objects_from_result(
 
                 arr = _simplify_segment(arr, simplify_mode, simplify_eps_coeff)
                 arr = _apply_polygon_steps(arr, resolved_polygon_steps, int(cid))
-                polys.append(_close_ring(arr.astype(float).tolist()))
+                arr_list = arr.astype(float).tolist()
+                if arr.shape[0] > 2 and not _step_exports_open_polyline(resolved_polygon_steps, int(cid)):
+                    arr_list = _close_ring(arr_list)
+                polys.append(arr_list)
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon
             polys.append(
