@@ -145,7 +145,7 @@ def app():
                             clear_all_btn = gr.Button(value="取消全選", variant="secondary")
 
                     with gr.Tab("Mask 優化"):
-                        gr.Markdown("### Mask 優化（先處理 mask 再生成 polygon）")
+                        gr.Markdown("### Mask 優化")
                         mask_opt_enable = gr.Checkbox(value=False, label="啟用 Mask 優化")
                         with gr.Row():
                             mask_opt_method = gr.Dropdown(
@@ -219,9 +219,9 @@ def app():
                             label="類別查詢",
                             placeholder="輸入關鍵字或 class id",
                         )
-                        with gr.Accordion("套用 Classes（全選=全部）", open=False):
+                        with gr.Accordion("Mask 套用 Classes", open=False):
                             step_class_filter = gr.CheckboxGroup(
-                                label="套用 Classes（全選=全部）",
+                                label="Classes",
                                 choices=[],
                                 value=[],
                             )
@@ -319,9 +319,9 @@ def app():
                             label="類別查詢",
                             placeholder="輸入關鍵字或 class id",
                         )
-                        with gr.Accordion("Polygon 套用 Classes（全選=全部）", open=False):
+                        with gr.Accordion("Polygon 套用 Classes", open=False):
                             polygon_step_class_filter = gr.CheckboxGroup(
-                                label="套用 Classes（全選=全部）",
+                                label="Classes",
                                 choices=[],
                                 value=[],
                             )
