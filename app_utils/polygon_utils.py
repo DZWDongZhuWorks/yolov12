@@ -236,6 +236,56 @@ def _polyline_length(line: np.ndarray) -> float:
     return float(np.linalg.norm(diffs, axis=1).sum())
 
 
+def _robust_mad(values: np.ndarray, eps: float = 1e-6) -> float:
+    if values.size == 0:
+        return 0.0
+    med = float(np.median(values))
+    mad = float(np.median(np.abs(values - med)))
+    return mad if mad > eps else 0.0
+
+
+def _clean_lane_midpoints(line: np.ndarray, widths: np.ndarray) -> np.ndarray:
+    """
+    針對 lane 中心線點做穩健清理：
+      1) 先依左右邊界寬度剔除離群樣本（避免 mask merge 後局部異常配對）。
+      2) 再依相鄰中點跳變距離剔除離群樣本（避免單點把線拉向內凹）。
+    """
+    if line.ndim != 2 or line.shape[0] < 3:
+        return line
+
+    keep = np.ones(line.shape[0], dtype=bool)
+
+    # (1) lane 寬度離群（以 median + MAD 判斷）
+    if widths.ndim == 1 and widths.shape[0] == line.shape[0]:
+        w_med = float(np.median(widths))
+        w_mad = _robust_mad(widths)
+        if w_mad > 0.0:
+            z = np.abs(widths - w_med) / (1.4826 * w_mad + 1e-6)
+            keep &= z <= 3.5
+
+    # (2) 折線局部跳變離群
+    seg = np.linalg.norm(np.diff(line, axis=0), axis=1)
+    if seg.size >= 3:
+        seg_med = float(np.median(seg))
+        seg_mad = _robust_mad(seg)
+        if seg_mad > 0.0:
+            zseg = np.abs(seg - seg_med) / (1.4826 * seg_mad + 1e-6)
+            bad_edge = zseg > 4.0
+            if np.any(bad_edge):
+                # 將異常邊連到的中間點標記為可移除，保留首尾點
+                for i, bad in enumerate(bad_edge):
+                    if not bad:
+                        continue
+                    mid_idx = i + 1
+                    if 0 < mid_idx < line.shape[0] - 1:
+                        keep[mid_idx] = False
+
+    keep[0] = True
+    keep[-1] = True
+    cleaned = line[keep]
+    return cleaned if cleaned.shape[0] >= 2 else line
+
+
 def _resample_polyline(line: np.ndarray, n_samples: int) -> Optional[np.ndarray]:
     if line.ndim != 2 or line.shape[0] < 2 or n_samples < 2:
         return None
@@ -352,6 +402,8 @@ def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.
     line = 0.5 * (ra + rb)
     if line.shape[0] < 2:
         return None
+    widths = np.linalg.norm(ra - rb, axis=1)
+    line = _clean_lane_midpoints(line, widths)
 
     x_min, y_min = line.min(axis=0)
     x_max, y_max = line.max(axis=0)
