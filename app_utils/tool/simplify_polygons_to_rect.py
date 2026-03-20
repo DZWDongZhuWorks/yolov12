@@ -114,6 +114,84 @@ def polygon_to_min_rect_and_line(
     return box, line_segment, line_vector
 
 
+def polygon_to_linestring(
+    polygon: list[list[float]],
+    min_aspect: float = 0.0,
+    num_points: int = 9,
+):
+    """
+    將狹長 polygon 轉成「多點」中心線 LineString。
+
+    與 export_line（只輸出 2 點長軸線段）不同，這裡會沿長軸方向切片，
+    估計每個切片的中心點，輸出較能描述彎曲/不規則狹長形狀的折線。
+
+    Returns:
+      - linestring_points: [[x1, y1], [x2, y2], ...]，至少 2 點，否則 None
+      - line_vector: [vx, vy]（首尾點差），否則 None
+    """
+    pts = np.array(polygon, dtype=np.float32)
+    if pts.shape[0] < 3:
+        return None, None
+
+    # 以 minAreaRect 判斷是否狹長
+    rect = cv2.minAreaRect(pts)
+    (w, h) = rect[1]
+    if w <= 0 or h <= 0:
+        return None, None
+
+    long_side = max(w, h)
+    short_side = min(w, h)
+    if min_aspect > 0:
+        aspect = long_side / (short_side + 1e-6)
+        if aspect < min_aspect:
+            return None, None
+
+    # 以 PCA 主方向當作長軸方向，次方向為短軸
+    center = pts.mean(axis=0)
+    centered = pts - center
+    cov = np.cov(centered.T)
+    evals, evecs = np.linalg.eigh(cov)
+    long_axis = evecs[:, int(np.argmax(evals))]
+    short_axis = np.array([-long_axis[1], long_axis[0]], dtype=np.float32)
+
+    # 投影到 (long, short) 座標
+    t = centered @ long_axis
+    s = centered @ short_axis
+    t_min, t_max = float(t.min()), float(t.max())
+    if t_max - t_min < 1e-6:
+        return None, None
+
+    # 沿長軸切片，使用每個切片中點在短軸方向的中位數作中心線
+    n = max(3, int(num_points))
+    edges = np.linspace(t_min, t_max, n + 1)
+    centers = []
+    for i in range(n):
+        l, r = edges[i], edges[i + 1]
+        if i == n - 1:
+            mask = (t >= l) & (t <= r)
+        else:
+            mask = (t >= l) & (t < r)
+
+        if np.any(mask):
+            t_mid = float((l + r) * 0.5)
+            s_mid = float(np.median(s[mask]))
+            p = center + t_mid * long_axis + s_mid * short_axis
+            centers.append([float(p[0]), float(p[1])])
+
+    if len(centers) < 2:
+        # 回退：至少輸出兩點（使用長軸端點）
+        t0, t1 = t_min, t_max
+        p0 = center + t0 * long_axis
+        p1 = center + t1 * long_axis
+        centers = [[float(p0[0]), float(p0[1])], [float(p1[0]), float(p1[1])]]
+
+    line_vector = [
+        float(centers[-1][0] - centers[0][0]),
+        float(centers[-1][1] - centers[0][1]),
+    ]
+    return centers, line_vector
+
+
 def update_bbox_xyxy_from_polygon(polygon: list[list[float]]) -> list[float]:
     """
     根據 polygon（四點矩形或一般多邊形）更新 bbox_xyxy。
@@ -134,6 +212,8 @@ def simplify_json_polygons(
     data: dict,
     min_aspect: float = 0.0,
     export_line: bool = False,
+    export_linestring: bool = False,
+    linestring_points: int = 9,
     target_classes: list | None = None,
 ) -> dict:
     """
@@ -147,13 +227,16 @@ def simplify_json_polygons(
         target_classes = ["white_line", "rectangle"]
         target_classes = ["0", "5"] 或 [0, 5]
 
-    - export_line = False:
+    - export_line = False 且 export_linestring = False:
         polygons 會被替換為 4 點旋轉矩形（或原 polygon）。
     - export_line = True:
         若 polygon 成功被簡化為長條矩形，則 polygons 直接被
         「長軸線段兩端點」取代（[[x1,y1],[x2,y2]]），
         並在 line_vectors 裡存放對應向量 [vx, vy]。
         不符合 min_aspect 的 polygon 則保持原樣。
+    - export_linestring = True:
+        若 polygon 符合狹長條件，則輸出多點 LineString（中心線），
+        比 export_line 更能表示狹長 polygon 的形狀。
 
     回傳新的 data，不會修改原物件。
     """
@@ -193,20 +276,29 @@ def simplify_json_polygons(
         polys = obj.get("polygons", [])
         new_polys = []
 
-        line_vectors = [] if export_line else None
+        line_vectors = [] if (export_line or export_linestring) else None
 
         for poly in polys:
             if not poly:
                 new_polys.append(poly)
-                if export_line:
+                if export_line or export_linestring:
                     line_vectors.append(None)
                 continue
 
-            rect_poly, line_seg, line_vec = polygon_to_min_rect_and_line(
-                poly, min_aspect=min_aspect
-            )
-
-            if export_line:
+            if export_linestring:
+                line_str, line_vec = polygon_to_linestring(
+                    poly, min_aspect=min_aspect, num_points=linestring_points
+                )
+                if line_str is not None:
+                    new_polys.append(line_str)
+                    line_vectors.append(line_vec)
+                else:
+                    new_polys.append(poly)
+                    line_vectors.append(None)
+            elif export_line:
+                rect_poly, line_seg, line_vec = polygon_to_min_rect_and_line(
+                    poly, min_aspect=min_aspect
+                )
                 # 若成功簡化為長條矩形，用長軸線段替代 polygon
                 if line_seg is not None:
                     new_polys.append(line_seg)   # 2 點 line segment
@@ -216,12 +308,15 @@ def simplify_json_polygons(
                     new_polys.append(poly)
                     line_vectors.append(None)
             else:
+                rect_poly, _, _ = polygon_to_min_rect_and_line(
+                    poly, min_aspect=min_aspect
+                )
                 # 原本行為：polygons 換成 4 點旋轉矩形 / 或原 polygon
                 new_polys.append(rect_poly)
 
         obj["polygons"] = new_polys
 
-        if export_line:
+        if export_line or export_linestring:
             obj["line_vectors"] = line_vectors
 
         # 這裡假設每個 object 只有一個 polygon 要簡化，
@@ -239,7 +334,8 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "將 JSON 中的 polygons 簡化成旋轉長條矩形；"
-            "啟用 --export-line 時，直接用長軸線段取代 polygon"
+            "啟用 --export-line 時，直接用長軸線段取代 polygon；"
+            "啟用 --export-linestring 時，輸出多點中心線。"
         )
     )
     parser.add_argument(
@@ -272,6 +368,21 @@ def main():
         ),
     )
     parser.add_argument(
+        "--export-linestring",
+        action="store_true",
+        help=(
+            "啟用後：對符合 min-aspect 的 polygon，"
+            "輸出多點中心線（LineString-like polyline）取代 polygons，"
+            "並輸出對應向量到 line_vectors。"
+        ),
+    )
+    parser.add_argument(
+        "--linestring-points",
+        type=int,
+        default=9,
+        help="export-linestring 模式下的中心線切片點數（>=3，預設 9）。",
+    )
+    parser.add_argument(
         "-c", "--class",
         dest="classes",
         nargs="+",
@@ -289,6 +400,8 @@ def main():
         data,
         min_aspect=args.min_aspect,
         export_line=args.export_line,
+        export_linestring=args.export_linestring,
+        linestring_points=args.linestring_points,
         target_classes=args.classes,  # 新增：只處理指定類別
     )
     save_json(simplified, args.output)
@@ -296,6 +409,7 @@ def main():
     print(
         f"已將 {args.json} 的 polygons 簡化，"
         f"輸出到 {args.output}（export_line={args.export_line}，"
+        f"export_linestring={args.export_linestring}，"
         f"classes={args.classes}）"
     )
 
