@@ -146,6 +146,81 @@ def _polygon_to_long_axis_line(seg: np.ndarray, min_aspect: float = 0.0) -> np.n
     return np.vstack([p1, p2])
 
 
+def _polygon_to_linestring(seg: np.ndarray, min_aspect: float = 0.0) -> np.ndarray:
+    """
+    將狹長 polygon 轉成多點 LineString（開放折線）。
+    與 export_line（2 點）不同，此方法會嘗試輸出多點中心線來保留形狀。
+    """
+    if seg.shape[0] < 3:
+        return seg
+
+    pts = seg.astype(np.float32)
+    if np.allclose(pts[0], pts[-1]) and pts.shape[0] > 3:
+        pts = pts[:-1]
+    if pts.shape[0] < 3:
+        return seg
+
+    rect = cv2.minAreaRect(pts)
+    (w, h) = rect[1]
+    if w <= 0 or h <= 0:
+        return seg
+
+    long_side = max(w, h)
+    short_side = min(w, h)
+    if min_aspect > 0:
+        aspect = float(long_side / (short_side + 1e-6))
+        if aspect < min_aspect:
+            return seg
+
+    # 以 PCA 取得主軸 / 次軸座標系
+    center = pts.mean(axis=0)
+    centered = (pts - center).astype(np.float64)
+    cov = np.cov(centered.T)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    major = eigvecs[:, int(np.argmax(eigvals))]
+    major = major / (np.linalg.norm(major) + 1e-12)
+    minor = np.array([-major[1], major[0]], dtype=np.float64)
+
+    t_vals = centered @ major
+    s_vals = centered @ minor
+    t_min, t_max = float(t_vals.min()), float(t_vals.max())
+    if (t_max - t_min) <= 1e-6:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    sample_count = int(np.clip(round(long_side / (short_side + 1e-6)) + 2, 4, 12))
+    sample_t = np.linspace(t_min, t_max, sample_count, dtype=np.float64)
+    half_bin = 0.5 * (t_max - t_min) / max(sample_count - 1, 1)
+
+    line_pts: List[np.ndarray] = []
+    for t0 in sample_t:
+        in_bin = np.abs(t_vals - t0) <= max(half_bin, 1e-6)
+        if np.any(in_bin):
+            s_local = s_vals[in_bin]
+        else:
+            nearest = int(np.argmin(np.abs(t_vals - t0)))
+            s_local = np.array([s_vals[nearest]], dtype=np.float64)
+        s_mid = 0.5 * (float(s_local.min()) + float(s_local.max()))
+        p = center.astype(np.float64) + t0 * major + s_mid * minor
+        line_pts.append(p.astype(np.float32))
+
+    line = np.asarray(line_pts, dtype=np.float32)
+
+    # 去除重複/過近點
+    dedup: List[np.ndarray] = [line[0]]
+    for p in line[1:]:
+        if np.linalg.norm(p - dedup[-1]) > 1e-3:
+            dedup.append(p)
+    line = np.asarray(dedup, dtype=np.float32)
+    if line.shape[0] < 2:
+        return _polygon_to_long_axis_line(seg, min_aspect=min_aspect)
+
+    # 輕度簡化，避免過度抖動
+    threshold_area2 = (short_side * 0.2) ** 2
+    if line.shape[0] > 3 and threshold_area2 > 0:
+        line = _visvalingam_whyatt_open(line, threshold_area2=threshold_area2)
+    return line
+
+
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
     if seg.shape[0] <= 3 or not steps:
         return seg
@@ -153,7 +228,7 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = seg
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "polygon_to_linestring", "pca"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -166,6 +241,8 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
                 out = _polygon_to_min_area_rect(out, min_aspect=min_aspect)
             elif name == "export_line":
                 out = _polygon_to_long_axis_line(out, min_aspect=min_aspect)
+            elif name == "polygon_to_linestring":
+                out = _polygon_to_linestring(out, min_aspect=min_aspect)
             elif name == "pca":
                 # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
                 continue
