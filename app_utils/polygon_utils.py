@@ -300,6 +300,66 @@ def _pick_ring_endpoints_by_axis(ring: np.ndarray) -> Optional[tuple[int, int]]:
     return i_min, i_max
 
 
+def _pick_ring_endpoints_balanced(ring: np.ndarray) -> Optional[tuple[int, int]]:
+    """
+    以「兩條邊界弧長要盡量平衡」挑選 ring 起終點。
+    對 U 型/收口型輪廓，比純 PCA 端點更不容易把兩側錯配。
+    """
+    if ring.ndim != 2 or ring.shape[0] < 6:
+        return None
+
+    pts = ring[:, :2].astype(np.float32)
+    n = pts.shape[0]
+
+    # 每段弧長（最後一點到第一點也算一段）
+    nxt = np.roll(pts, -1, axis=0)
+    seg_len = np.linalg.norm(nxt - pts, axis=1).astype(np.float64)
+    perim = float(seg_len.sum())
+    if perim <= 1e-6:
+        return None
+
+    cum = np.concatenate([[0.0], np.cumsum(seg_len)])  # len n+1, cum[k] = [0, k) 的弧長
+
+    def arc_len(i: int, j: int) -> float:
+        if i <= j:
+            return float(cum[j] - cum[i])
+        return float((cum[n] - cum[i]) + cum[j])
+
+    # 正規化用：對角線長
+    x_min, y_min = pts.min(axis=0)
+    x_max, y_max = pts.max(axis=0)
+    diag = float(np.hypot(x_max - x_min, y_max - y_min))
+    if diag <= 1e-6:
+        diag = 1.0
+
+    best_pair: Optional[tuple[int, int]] = None
+    best_score = -1.0
+
+    for i in range(n):
+        for j in range(i + 2, n):  # 避免相鄰點
+            if i == 0 and j == n - 1:
+                continue  # 也是相鄰
+
+            l1 = arc_len(i, j)
+            l2 = perim - l1
+            if l1 <= 1e-6 or l2 <= 1e-6:
+                continue
+
+            # 邊界平衡度：越接近 1 越好
+            balance = float(min(l1, l2) / max(l1, l2))
+
+            # 端點距離：避免選到太近的點造成不穩定
+            chord = float(np.linalg.norm(pts[i] - pts[j]) / diag)
+
+            # 以平衡為主、距離為輔
+            score = 0.8 * balance + 0.2 * chord
+            if score > best_score:
+                best_score = score
+                best_pair = (i, j)
+
+    return best_pair
+
+
 def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.ndarray]:
     """
     將單一封閉 ring 轉成可跟隨急彎的多點中心線。
@@ -315,10 +375,19 @@ def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.
     if n < 6:
         return None
 
-    # 優先以主軸投影的兩端點作為起終點，急彎時比單純最遠點更穩定
+    # 優先以主軸投影的兩端點作為起終點；若弧長非常不平衡則改用 balanced 策略
     endpoint_pair = _pick_ring_endpoints_by_axis(arr)
     if endpoint_pair is not None:
         best_i, best_j = endpoint_pair
+        pa = _extract_ring_path(arr, best_i, best_j)
+        pb = _extract_ring_path(arr, best_j, best_i)
+        la = _polyline_length(pa)
+        lb = _polyline_length(pb)
+        ratio = float(min(la, lb) / max(la, lb)) if la > 1e-6 and lb > 1e-6 else 0.0
+        if ratio < 0.5:
+            balanced_pair = _pick_ring_endpoints_balanced(arr)
+            if balanced_pair is not None:
+                best_i, best_j = balanced_pair
     else:
         # fallback: O(N^2) 找 ring 上最遠兩點
         best_i, best_j = -1, -1
