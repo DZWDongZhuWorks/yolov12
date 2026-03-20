@@ -315,43 +315,74 @@ def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.
     if n < 6:
         return None
 
-    # 優先以主軸投影的兩端點作為起終點，急彎時比單純最遠點更穩定
-    endpoint_pair = _pick_ring_endpoints_by_axis(arr)
-    if endpoint_pair is not None:
-        best_i, best_j = endpoint_pair
-    else:
-        # fallback: O(N^2) 找 ring 上最遠兩點
+    def _farthest_pair(points: np.ndarray) -> Optional[tuple[int, int]]:
         best_i, best_j = -1, -1
         best_d2 = -1.0
-        for i in range(n):
-            d = arr - arr[i]
+        for ii in range(points.shape[0]):
+            d = points - points[ii]
             d2 = d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1]
-            j = int(np.argmax(d2))
-            if float(d2[j]) > best_d2 and j != i:
-                best_d2 = float(d2[j])
-                best_i, best_j = i, j
-
+            jj = int(np.argmax(d2))
+            if float(d2[jj]) > best_d2 and jj != ii:
+                best_d2 = float(d2[jj])
+                best_i, best_j = ii, jj
         if best_i < 0 or best_j < 0:
             return None
+        return best_i, best_j
 
-    path_a = _extract_ring_path(arr, best_i, best_j)
-    path_b = _extract_ring_path(arr, best_j, best_i)
-    path_b = path_b[::-1]
+    def _line_from_pair(i0: int, i1: int) -> Optional[np.ndarray]:
+        path_a = _extract_ring_path(arr, i0, i1)
+        path_b = _extract_ring_path(arr, i1, i0)
+        path_b = path_b[::-1]
 
-    len_a = _polyline_length(path_a)
-    len_b = _polyline_length(path_b)
-    if len_a <= 1e-6 or len_b <= 1e-6:
+        len_a = _polyline_length(path_a)
+        len_b = _polyline_length(path_b)
+        if len_a <= 1e-6 or len_b <= 1e-6:
+            return None
+
+        n_samples = int(np.clip(max(path_a.shape[0], path_b.shape[0]), 8, 256))
+        ra = _resample_polyline(path_a, n_samples)
+        rb = _resample_polyline(path_b, n_samples)
+        if ra is None or rb is None:
+            return None
+
+        out = 0.5 * (ra + rb)
+        return out if out.shape[0] >= 2 else None
+
+    def _inside_ratio(line_points: np.ndarray, contour: np.ndarray) -> float:
+        if line_points.ndim != 2 or line_points.shape[0] < 2:
+            return 0.0
+        total = 0
+        inside = 0
+        for seg_idx in range(line_points.shape[0] - 1):
+            p0 = line_points[seg_idx]
+            p1 = line_points[seg_idx + 1]
+            seg_len = float(np.linalg.norm(p1 - p0))
+            n_steps = max(2, int(np.ceil(seg_len / 2.0)))
+            for t in np.linspace(0.0, 1.0, n_steps):
+                p = p0 * (1.0 - t) + p1 * t
+                total += 1
+                if cv2.pointPolygonTest(contour, (float(p[0]), float(p[1])), False) >= 0:
+                    inside += 1
+        return float(inside) / float(max(total, 1))
+
+    candidate_lines: List[np.ndarray] = []
+    endpoint_pair = _pick_ring_endpoints_by_axis(arr)
+    if endpoint_pair is not None:
+        candidate = _line_from_pair(endpoint_pair[0], endpoint_pair[1])
+        if candidate is not None:
+            candidate_lines.append(candidate)
+
+    far_pair = _farthest_pair(arr)
+    if far_pair is not None:
+        candidate = _line_from_pair(far_pair[0], far_pair[1])
+        if candidate is not None:
+            candidate_lines.append(candidate)
+
+    if not candidate_lines:
         return None
 
-    n_samples = int(np.clip(max(path_a.shape[0], path_b.shape[0]), 8, 256))
-    ra = _resample_polyline(path_a, n_samples)
-    rb = _resample_polyline(path_b, n_samples)
-    if ra is None or rb is None:
-        return None
-
-    line = 0.5 * (ra + rb)
-    if line.shape[0] < 2:
-        return None
+    contour = arr.reshape(-1, 1, 2).astype(np.float32)
+    line = max(candidate_lines, key=lambda ln: _inside_ratio(ln, contour))
 
     x_min, y_min = line.min(axis=0)
     x_max, y_max = line.max(axis=0)
