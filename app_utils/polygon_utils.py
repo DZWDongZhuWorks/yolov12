@@ -261,7 +261,14 @@ def _clean_lane_midpoints(line: np.ndarray, widths: np.ndarray) -> np.ndarray:
         w_mad = _robust_mad(widths)
         if w_mad > 0.0:
             z = np.abs(widths - w_med) / (1.4826 * w_mad + 1e-6)
-            keep &= z <= 3.5
+            # 僅過濾中段，保留兩端自然收斂/擴張特徵（例如收口型 U）
+            if line.shape[0] >= 6:
+                margin = max(1, int(round(line.shape[0] * 0.12)))
+                inner = np.zeros(line.shape[0], dtype=bool)
+                inner[margin:-margin] = True
+                keep &= (~inner) | (z <= 3.5)
+            else:
+                keep &= z <= 3.5
 
     # (2) 折線局部跳變離群
     seg = np.linalg.norm(np.diff(line, axis=0), axis=1)
@@ -409,8 +416,17 @@ def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.
     x_max, y_max = line.max(axis=0)
     size = max(float(x_max - x_min), float(y_max - y_min))
     threshold_area2 = (size * DEFAULT_SIMPLIFY_EPS_RATIO * max(0.1, float(eps_coeff))) ** 2
-    line = _visvalingam_whyatt_open(line, threshold_area2)
-    return line if line.shape[0] >= 2 else None
+    line_raw = line
+    line_simplified = _visvalingam_whyatt_open(line_raw, threshold_area2)
+    if line_simplified.shape[0] < 2:
+        return line_raw if line_raw.shape[0] >= 2 else None
+
+    # 避免過度簡化造成中心線「過度聚攏」喪失 U 型收口幾何
+    raw_len = _polyline_length(line_raw)
+    simp_len = _polyline_length(line_simplified)
+    if raw_len > 1e-6 and simp_len / raw_len < 0.88:
+        return line_raw
+    return line_simplified
 
 
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
