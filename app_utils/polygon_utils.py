@@ -300,6 +300,73 @@ def _pick_ring_endpoints_by_axis(ring: np.ndarray) -> Optional[tuple[int, int]]:
     return i_min, i_max
 
 
+def _ring_arc_length(ring: np.ndarray, start_idx: int, end_idx: int) -> float:
+    """回傳 ring 從 start_idx 走到 end_idx（含跨尾首）的弧長。"""
+    n = ring.shape[0]
+    if n < 2 or start_idx == end_idx:
+        return 0.0
+
+    i = int(start_idx)
+    total = 0.0
+    while i != int(end_idx):
+        j = (i + 1) % n
+        total += float(np.linalg.norm(ring[j] - ring[i]))
+        i = j
+    return total
+
+
+def _pick_ring_endpoints_balanced(ring: np.ndarray) -> Optional[tuple[int, int]]:
+    """
+    由 PCA 主軸兩端候選點中，挑出「端點距離大且兩側弧長較平衡」的配對。
+    可降低 U 型收口在 merge 後被錯誤配對造成中心線偏移。
+    """
+    if ring.ndim != 2 or ring.shape[0] < 8:
+        return None
+
+    pair_by_axis = _pick_ring_endpoints_by_axis(ring)
+    if pair_by_axis is None:
+        return None
+
+    arr = ring[:, :2].astype(np.float32)
+    center = arr.mean(axis=0)
+    centered = arr - center
+    cov = np.cov(centered.T)
+    if cov.shape != (2, 2):
+        return None
+    vals, vecs = np.linalg.eigh(cov)
+    axis = vecs[:, int(np.argmax(vals))].astype(np.float32)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm <= 1e-6:
+        return None
+    axis = axis / axis_norm
+
+    t = centered @ axis
+    order = np.argsort(t)
+    n = arr.shape[0]
+    k = int(np.clip(n // 8, 3, 16))
+    low = order[:k]
+    high = order[-k:]
+
+    best_pair: Optional[tuple[int, int]] = None
+    best_score = -1.0
+    for i in low:
+        for j in high:
+            if int(i) == int(j):
+                continue
+            la = _ring_arc_length(arr, int(i), int(j))
+            lb = _ring_arc_length(arr, int(j), int(i))
+            if la <= 1e-6 or lb <= 1e-6:
+                continue
+            balance = min(la, lb) / max(la, lb)
+            d2 = float(np.sum((arr[int(i)] - arr[int(j)]) ** 2))
+            score = d2 * balance
+            if score > best_score:
+                best_score = score
+                best_pair = (int(i), int(j))
+
+    return best_pair or pair_by_axis
+
+
 def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.ndarray]:
     """
     將單一封閉 ring 轉成可跟隨急彎的多點中心線。
@@ -315,8 +382,8 @@ def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.
     if n < 6:
         return None
 
-    # 優先以主軸投影的兩端點作為起終點，急彎時比單純最遠點更穩定
-    endpoint_pair = _pick_ring_endpoints_by_axis(arr)
+    # 優先用弧長平衡 + 主軸端點挑選，可減少 merge 後 U 型偏移
+    endpoint_pair = _pick_ring_endpoints_balanced(arr)
     if endpoint_pair is not None:
         best_i, best_j = endpoint_pair
     else:
