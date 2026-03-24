@@ -755,33 +755,31 @@ def _merge_instances_by_iou(instances: List[Dict[str, Any]], iou_threshold: floa
     while pending:
         base = pending.pop(0)
         base_mask = (base["binary"] > 0).astype(np.uint8)
+        seed_mask = base_mask.copy()
         base_sources = list(base.get("source_indices", [])) or [base.get("source_idx", 0)]
         base_conf = float(base.get("conf", 0.0))
 
-        changed = True
-        while changed:
-            changed = False
-            remained: List[Dict[str, Any]] = []
-            for candidate in pending:
-                cand_mask = (candidate["binary"] > 0).astype(np.uint8)
-                inter = np.logical_and(base_mask > 0, cand_mask > 0).sum()
-                if inter == 0:
-                    remained.append(candidate)
-                    continue
-                union = np.logical_or(base_mask > 0, cand_mask > 0).sum()
-                if union <= 0:
-                    remained.append(candidate)
-                    continue
-                iou = inter / float(union)
-                if iou >= iou_threshold:
-                    base_mask = np.logical_or(base_mask > 0, cand_mask > 0).astype(np.uint8)
-                    cand_sources = list(candidate.get("source_indices", [])) or [candidate.get("source_idx", 0)]
-                    base_sources.extend(cand_sources)
-                    base_conf = max(base_conf, float(candidate.get("conf", 0.0)))
-                    changed = True
-                else:
-                    remained.append(candidate)
-            pending = remained
+        remained: List[Dict[str, Any]] = []
+        for candidate in pending:
+            cand_mask = (candidate["binary"] > 0).astype(np.uint8)
+            # 僅以「初始種子」做 IoU 判斷，避免 A-B、B-C 的鏈式併合把遠端實例錯誤合成同一條。
+            inter = np.logical_and(seed_mask > 0, cand_mask > 0).sum()
+            if inter == 0:
+                remained.append(candidate)
+                continue
+            union = np.logical_or(seed_mask > 0, cand_mask > 0).sum()
+            if union <= 0:
+                remained.append(candidate)
+                continue
+            iou = inter / float(union)
+            if iou >= iou_threshold:
+                base_mask = np.logical_or(base_mask > 0, cand_mask > 0).astype(np.uint8)
+                cand_sources = list(candidate.get("source_indices", [])) or [candidate.get("source_idx", 0)]
+                base_sources.extend(cand_sources)
+                base_conf = max(base_conf, float(candidate.get("conf", 0.0)))
+            else:
+                remained.append(candidate)
+        pending = remained
 
         merged_instances.append(
             {
