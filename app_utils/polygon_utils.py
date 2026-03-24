@@ -300,6 +300,62 @@ def _pick_ring_endpoints_by_axis(ring: np.ndarray) -> Optional[tuple[int, int]]:
     return i_min, i_max
 
 
+def _pick_ring_endpoints_balanced(ring: np.ndarray) -> Optional[tuple[int, int]]:
+    """
+    在 ring 上選擇一組較穩定的起終點：
+    - 端點距離要夠大（避免退化）
+    - 兩條對應邊界長度要盡量平衡（避免 U 型開口造成中心線內凹）
+    """
+    if ring.ndim != 2 or ring.shape[0] < 6:
+        return None
+
+    arr = ring[:, :2].astype(np.float32)
+    n = arr.shape[0]
+    if n < 6:
+        return None
+
+    candidates: set[tuple[int, int]] = set()
+
+    by_axis = _pick_ring_endpoints_by_axis(arr)
+    if by_axis is not None:
+        i, j = by_axis
+        candidates.add((min(i, j), max(i, j)))
+
+    # 以每個點最遠點建立候選，通常可涵蓋「最遠點對」與其近似解
+    for i in range(n):
+        d = arr - arr[i]
+        d2 = d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1]
+        j = int(np.argmax(d2))
+        if j == i:
+            continue
+        candidates.add((min(i, j), max(i, j)))
+
+    if not candidates:
+        return None
+
+    best_pair: Optional[tuple[int, int]] = None
+    best_score = -1.0
+    for i, j in candidates:
+        path_a = _extract_ring_path(arr, i, j)
+        path_b = _extract_ring_path(arr, j, i)
+        len_a = _polyline_length(path_a)
+        len_b = _polyline_length(path_b)
+        if len_a <= 1e-6 or len_b <= 1e-6:
+            continue
+
+        # 路徑平衡度：越接近 1 越好；U 型開口常會出現極端不平衡
+        balance = min(len_a, len_b) / max(len_a, len_b)
+        chord = arr[j] - arr[i]
+        dist2 = float(chord[0] * chord[0] + chord[1] * chord[1])
+        # 優先大距離，但用 balance 做強約束
+        score = dist2 * (0.2 + 0.8 * balance)
+        if score > best_score:
+            best_score = score
+            best_pair = (i, j)
+
+    return best_pair
+
+
 def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.ndarray]:
     """
     將單一封閉 ring 轉成可跟隨急彎的多點中心線。
@@ -315,24 +371,10 @@ def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.
     if n < 6:
         return None
 
-    # 優先以主軸投影的兩端點作為起終點，急彎時比單純最遠點更穩定
-    endpoint_pair = _pick_ring_endpoints_by_axis(arr)
-    if endpoint_pair is not None:
-        best_i, best_j = endpoint_pair
-    else:
-        # fallback: O(N^2) 找 ring 上最遠兩點
-        best_i, best_j = -1, -1
-        best_d2 = -1.0
-        for i in range(n):
-            d = arr - arr[i]
-            d2 = d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1]
-            j = int(np.argmax(d2))
-            if float(d2[j]) > best_d2 and j != i:
-                best_d2 = float(d2[j])
-                best_i, best_j = i, j
-
-        if best_i < 0 or best_j < 0:
-            return None
+    endpoint_pair = _pick_ring_endpoints_balanced(arr)
+    if endpoint_pair is None:
+        return None
+    best_i, best_j = endpoint_pair
 
     path_a = _extract_ring_path(arr, best_i, best_j)
     path_b = _extract_ring_path(arr, best_j, best_i)
