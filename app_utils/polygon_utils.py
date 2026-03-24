@@ -266,99 +266,165 @@ def _resample_polyline(line: np.ndarray, n_samples: int) -> Optional[np.ndarray]
     return np.asarray(out, dtype=np.float32)
 
 
-def _extract_ring_path(ring: np.ndarray, start_idx: int, end_idx: int) -> np.ndarray:
-    n = ring.shape[0]
-    if start_idx <= end_idx:
-        return ring[start_idx:end_idx + 1]
-    return np.vstack([ring[start_idx:], ring[:end_idx + 1]])
-
-
-def _pick_ring_endpoints_by_axis(ring: np.ndarray) -> Optional[tuple[int, int]]:
-    """以 PCA 主軸決定 ring 中心線的起終點索引（較穩定於急彎）。"""
-    if ring.ndim != 2 or ring.shape[0] < 4:
+def _extract_centerline_delaunay(arr: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.ndarray]:
+    """
+    使用 Delaunay 三角網格式的 Medial Axis 演算法，從封閉多邊形中萃取中心線。
+    能自動適應狹長、U型、甚至 O型 內凹幾何形狀。
+    """
+    if arr.ndim != 2 or arr.shape[0] < 3 or arr.shape[1] < 2:
         return None
 
-    arr = ring[:, :2].astype(np.float32)
-    center = arr.mean(axis=0)
-    centered = arr - center
-    cov = np.cov(centered.T)
-    if cov.shape != (2, 2):
+    arr_closed = arr if np.allclose(arr[0], arr[-1]) else np.vstack([arr, arr[0]])
+    diffs = np.diff(arr_closed, axis=0)
+    seg_lens = np.linalg.norm(diffs, axis=1)
+    poly_len = float(np.sum(seg_lens))
+    
+    if poly_len <= 1e-6:
         return None
+        
+    step = 15.0 # pixels
+    n_samples = int(np.clip(poly_len / step, 10, 500))
+    resampled = _resample_polyline(arr_closed, n_samples)
+    if resampled is None or resampled.shape[0] < 3:
+        return None
+    resampled = resampled[:-1]
+    
+    x_min, y_min = resampled.min(axis=0)
+    x_max, y_max = resampled.max(axis=0)
+    
+    pad = 20.0
+    w = int(x_max - x_min + 2 * pad)
+    h = int(y_max - y_min + 2 * pad)
+    subdiv = cv2.Subdiv2D((int(x_min - pad), int(y_min - pad), w, h))
+    
+    pts_inserted = []
+    for p in resampled:
+        if not pts_inserted or float(np.linalg.norm(p - pts_inserted[-1])) > 0.1:
+            subdiv.insert((float(p[0]), float(p[1])))
+            pts_inserted.append(p)
+            
+    if len(pts_inserted) < 3:
+        return None
+        
+    try:
+        triangles = subdiv.getTriangleList()
+    except Exception:
+        return None
+        
+    arr_float32 = arr_closed.astype(np.float32)
+    
+    inside_tris = []
+    for t in triangles:
+        p1 = np.array([t[0], t[1]], dtype=np.float32)
+        p2 = np.array([t[2], t[3]], dtype=np.float32)
+        p3 = np.array([t[4], t[5]], dtype=np.float32)
+        centroid = (p1 + p2 + p3) / 3.0
+        
+        if cv2.pointPolygonTest(arr_float32, (float(centroid[0]), float(centroid[1])), True) >= -5.0:
+            inside_tris.append((p1, p2, p3, centroid))
+            
+    if not inside_tris:
+        return None
+        
+    pts_inserted_np = np.asarray(pts_inserted, dtype=np.float32)
+    
+    def get_vertex_indices(tri_pts):
+        diff = pts_inserted_np[np.newaxis, :, :] - tri_pts[:, np.newaxis, :]
+        dist_sq = np.sum(diff**2, axis=-1)
+        return tuple(sorted(np.argmin(dist_sq, axis=1).tolist()))
+        
+    edge_to_tri_idx = {}
+    for i, t in enumerate(inside_tris):
+        pts = np.array([t[0], t[1], t[2]])
+        vid = get_vertex_indices(pts)
+        if len(set(vid)) < 3:
+            continue
+        edges = [(vid[0], vid[1]), (vid[1], vid[2]), (vid[0], vid[2])]
+        for e in edges:
+            edge_to_tri_idx.setdefault(e, []).append(i)
+            
+    n_nodes = len(inside_tris)
+    adj = {i: [] for i in range(n_nodes)}
+    for e, t_indices in edge_to_tri_idx.items():
+        if len(t_indices) == 2:
+            u, v = t_indices
+            adj[u].append(v)
+            adj[v].append(u)
+            
+    visited_dfs = set()
+    parent_dfs = {}
+    cycle_path = []
+    
+    def dfs_cycle(start):
+        stack = [(start, None)]
+        while stack:
+            curr, par = stack.pop()
+            if curr in visited_dfs:
+                path = [curr]
+                c = par
+                while c is not None and c != curr:
+                    path.append(c)
+                    c = parent_dfs.get(c)
+                if c == curr:
+                    path.append(curr)
+                    return path
+                continue
+            visited_dfs.add(curr)
+            parent_dfs[curr] = par
+            for neighbor in adj[curr]:
+                if neighbor != par:
+                    stack.append((neighbor, curr))
+        return []
 
-    vals, vecs = np.linalg.eigh(cov)
-    axis = vecs[:, int(np.argmax(vals))].astype(np.float32)
-    n = float(np.linalg.norm(axis))
-    if n <= 1e-6:
-        return None
-    axis = axis / n
+    for i in range(n_nodes):
+        if i not in visited_dfs:
+            cycle = dfs_cycle(i)
+            if len(cycle) > len(cycle_path):
+                cycle_path = cycle
 
-    t = centered @ axis
-    i_min = int(np.argmin(t))
-    i_max = int(np.argmax(t))
-    if i_min == i_max:
+    main_path_indices = []
+    if len(cycle_path) > max(n_nodes * 0.3, 5):
+        main_path_indices = cycle_path
+    else:
+        def bfs_farthest(start_node):
+            q = [(start_node, [start_node])]
+            vis = {start_node}
+            max_path = [start_node]
+            while q:
+                curr, path = q.pop(0)
+                if len(path) > len(max_path):
+                    max_path = path
+                for neighbor in adj[curr]:
+                    if neighbor not in vis:
+                        vis.add(neighbor)
+                        q.append((neighbor, path + [neighbor]))
+            return max_path
+            
+        for i in range(n_nodes):
+            path = bfs_farthest(i)
+            if len(path) > len(main_path_indices):
+                main_path_indices = path
+
+    if len(main_path_indices) < 2:
         return None
-    return i_min, i_max
+        
+    centerline = np.asarray([inside_tris[i][3] for i in main_path_indices], dtype=np.float32)
+    
+    x_min_l, y_min_l = centerline.min(axis=0)
+    x_max_l, y_max_l = centerline.max(axis=0)
+    size = max(float(x_max_l - x_min_l), float(y_max_l - y_min_l))
+    threshold_area2 = (size * DEFAULT_SIMPLIFY_EPS_RATIO * max(0.1, float(eps_coeff))) ** 2
+    smoothed_line = _visvalingam_whyatt_open(centerline, threshold_area2)
+    
+    return smoothed_line if smoothed_line.shape[0] >= 2 else centerline
 
 
 def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.ndarray]:
     """
     將單一封閉 ring 轉成可跟隨急彎的多點中心線。
-    核心：找 ring 上最遠兩點當作兩側邊界的共同端點，再對兩條邊界重採樣取中點。
+    核心：使用 Delaunay 三角網格之內接中軸 (Medial Axis) 演算法。
     """
-    if ring.ndim != 2 or ring.shape[0] < 6 or ring.shape[1] < 2:
-        return None
-
-    arr = ring[:, :2].astype(np.float32)
-    if arr.shape[0] >= 2 and np.allclose(arr[0], arr[-1]):
-        arr = arr[:-1]
-    n = arr.shape[0]
-    if n < 6:
-        return None
-
-    # 優先以主軸投影的兩端點作為起終點，急彎時比單純最遠點更穩定
-    endpoint_pair = _pick_ring_endpoints_by_axis(arr)
-    if endpoint_pair is not None:
-        best_i, best_j = endpoint_pair
-    else:
-        # fallback: O(N^2) 找 ring 上最遠兩點
-        best_i, best_j = -1, -1
-        best_d2 = -1.0
-        for i in range(n):
-            d = arr - arr[i]
-            d2 = d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1]
-            j = int(np.argmax(d2))
-            if float(d2[j]) > best_d2 and j != i:
-                best_d2 = float(d2[j])
-                best_i, best_j = i, j
-
-        if best_i < 0 or best_j < 0:
-            return None
-
-    path_a = _extract_ring_path(arr, best_i, best_j)
-    path_b = _extract_ring_path(arr, best_j, best_i)
-    path_b = path_b[::-1]
-
-    len_a = _polyline_length(path_a)
-    len_b = _polyline_length(path_b)
-    if len_a <= 1e-6 or len_b <= 1e-6:
-        return None
-
-    n_samples = int(np.clip(max(path_a.shape[0], path_b.shape[0]), 8, 256))
-    ra = _resample_polyline(path_a, n_samples)
-    rb = _resample_polyline(path_b, n_samples)
-    if ra is None or rb is None:
-        return None
-
-    line = 0.5 * (ra + rb)
-    if line.shape[0] < 2:
-        return None
-
-    x_min, y_min = line.min(axis=0)
-    x_max, y_max = line.max(axis=0)
-    size = max(float(x_max - x_min), float(y_max - y_min))
-    threshold_area2 = (size * DEFAULT_SIMPLIFY_EPS_RATIO * max(0.1, float(eps_coeff))) ** 2
-    line = _visvalingam_whyatt_open(line, threshold_area2)
-    return line if line.shape[0] >= 2 else None
+    return _extract_centerline_delaunay(ring, eps_coeff)
 
 
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
