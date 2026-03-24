@@ -368,7 +368,7 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = seg
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line", "polygon_merge"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -386,6 +386,9 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
                 continue
             elif name == "polygon_to_lane_line":
                 # 需在 object-level 聚合所有點，此處先略過
+                continue
+            elif name == "polygon_merge":
+                # polygon_merge 為 object-level 後處理（需跨物件比較重疊），此處先略過
                 continue
             else:
                 out = _simplify_segment(out, name, eps_coeff)
@@ -617,6 +620,157 @@ def _apply_pca_alignment(objects: List[Dict[str, Any]], steps: Optional[List[Dic
                         objects[entry["obj_idx"]]["polygons"][entry["poly_idx"]] = [n1, n2]
 
 
+def _polygon_to_mask(poly: np.ndarray, height: int, width: int) -> Optional[np.ndarray]:
+    if poly.ndim != 2 or poly.shape[0] < 3:
+        return None
+    mask = np.zeros((height, width), dtype=np.uint8)
+    pts = np.round(poly[:, :2]).astype(np.int32).reshape(-1, 1, 2)
+    cv2.fillPoly(mask, [pts], 1)
+    return mask
+
+
+def _mask_to_closed_polygons(mask: np.ndarray) -> List[List[List[float]]]:
+    contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+    polygons: List[List[List[float]]] = []
+    for contour in contours:
+        arr = contour.reshape(-1, 2).astype(np.float32)
+        if arr.shape[0] < 3:
+            continue
+        polygons.append(_close_ring(arr.astype(float).tolist()))
+    return polygons
+
+
+def _apply_polygon_merge(objects: List[Dict[str, Any]], steps: Optional[List[Dict[str, Any]]], image_shape):
+    if not objects or not steps:
+        return objects
+    if not image_shape or len(image_shape) < 2:
+        return objects
+
+    h = int(image_shape[0])
+    w = int(image_shape[1])
+    if h <= 0 or w <= 0:
+        return objects
+
+    merge_steps = [st for st in steps if str(st.get("name", "")).strip().lower() == "polygon_merge"]
+    if not merge_steps:
+        return objects
+
+    current_objects = objects
+    for step in merge_steps:
+        class_filter = step.get("class_filter")
+        count = max(1, int(step.get("count", 1)))
+
+        for _ in range(count):
+            entries: List[Dict[str, Any]] = []
+            untouched_objects: List[Dict[str, Any]] = []
+
+            for obj in current_objects:
+                cid = int(obj.get("class_id", -1))
+                polygons = obj.get("polygons", [])
+                if class_filter is not None and cid not in class_filter:
+                    untouched_objects.append(obj)
+                    continue
+
+                valid_polys: List[List[List[float]]] = []
+                for poly in polygons:
+                    arr = np.asarray(poly, dtype=np.float32)
+                    if arr.ndim != 2 or arr.shape[0] < 3:
+                        continue
+                    if np.allclose(arr[0], arr[-1]) and arr.shape[0] > 3:
+                        arr = arr[:-1]
+                    if arr.shape[0] < 3:
+                        continue
+                    mask = _polygon_to_mask(arr, h, w)
+                    if mask is None or int(mask.sum()) <= 0:
+                        continue
+                    ys, xs = np.where(mask > 0)
+                    entries.append(
+                        {
+                            "class_id": cid,
+                            "class_name": obj.get("class_name", str(cid)),
+                            "confidence": obj.get("confidence", None),
+                            "mask": mask,
+                            "bbox_xyxy": [float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())],
+                        }
+                    )
+                    valid_polys.append(_close_ring(arr.astype(float).tolist()))
+
+                # 若該 object 沒有可合併 polygon，維持原狀
+                if not valid_polys:
+                    untouched_objects.append(obj)
+
+            if not entries:
+                current_objects = untouched_objects
+                continue
+
+            next_objects: List[Dict[str, Any]] = list(untouched_objects)
+            classes = sorted({int(e["class_id"]) for e in entries})
+            for cid in classes:
+                class_entries = [e for e in entries if int(e["class_id"]) == cid]
+                n = len(class_entries)
+                if n == 0:
+                    continue
+
+                parent = list(range(n))
+
+                def find(x: int) -> int:
+                    while parent[x] != x:
+                        parent[x] = parent[parent[x]]
+                        x = parent[x]
+                    return x
+
+                def union(a: int, b: int):
+                    ra, rb = find(a), find(b)
+                    if ra != rb:
+                        parent[rb] = ra
+
+                bboxes = [e["bbox_xyxy"] for e in class_entries]
+                for i in range(n):
+                    x1a, y1a, x2a, y2a = bboxes[i]
+                    for j in range(i + 1, n):
+                        x1b, y1b, x2b, y2b = bboxes[j]
+                        if x2a < x1b or x2b < x1a or y2a < y1b or y2b < y1a:
+                            continue
+                        if np.logical_and(class_entries[i]["mask"] > 0, class_entries[j]["mask"] > 0).any():
+                            union(i, j)
+
+                groups: Dict[int, List[int]] = {}
+                for idx in range(n):
+                    root = find(idx)
+                    groups.setdefault(root, []).append(idx)
+
+                for member_indices in groups.values():
+                    merged_mask = np.zeros((h, w), dtype=np.uint8)
+                    conf_values: List[float] = []
+                    class_name = class_entries[member_indices[0]].get("class_name", str(cid))
+                    for idx in member_indices:
+                        merged_mask = np.logical_or(merged_mask > 0, class_entries[idx]["mask"] > 0).astype(np.uint8)
+                        conf_val = class_entries[idx].get("confidence")
+                        if conf_val is not None:
+                            conf_values.append(float(conf_val))
+
+                    polygons = _mask_to_closed_polygons(merged_mask)
+                    if not polygons:
+                        continue
+                    ys, xs = np.where(merged_mask > 0)
+                    if len(xs) == 0 or len(ys) == 0:
+                        continue
+
+                    next_objects.append(
+                        {
+                            "class_id": int(cid),
+                            "class_name": class_name,
+                            "confidence": max(conf_values) if conf_values else None,
+                            "bbox_xyxy": [float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())],
+                            "polygons": polygons,
+                        }
+                    )
+
+            current_objects = next_objects
+
+    return current_objects
+
+
 def _close_ring(points: List[List[float]]) -> List[List[float]]:
     """
     確保 polygon ring 首尾相同（GeoJSON 需要閉合 ring）。
@@ -744,5 +898,6 @@ def build_objects_from_result(
 
     _apply_object_lane_line(objects, resolved_polygon_steps)
     _apply_pca_alignment(objects, resolved_polygon_steps)
+    objects = _apply_polygon_merge(objects, resolved_polygon_steps, getattr(result, "orig_shape", None))
 
     return objects
