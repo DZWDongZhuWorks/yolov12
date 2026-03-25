@@ -97,40 +97,53 @@ def _simplify_segment(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarra
 
 
 def _polygon_to_min_area_rect(seg: np.ndarray, min_aspect: float = 0.0) -> np.ndarray:
-    if seg.shape[0] < 3:
-        return seg
+    arr = np.asarray(seg, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        return arr
 
-    rect = cv2.minAreaRect(seg.astype(np.float32))
+    is_closed = arr.shape[0] >= 4 and np.allclose(arr[0], arr[-1])
+    core = arr[:-1] if is_closed else arr
+    if not is_closed or core.shape[0] < 3:
+        return arr
+
+    rect = cv2.minAreaRect(core.astype(np.float32))
     (w, h) = rect[1]
     if w <= 0 or h <= 0:
-        return seg
+        return arr
 
     long_side = max(w, h)
     short_side = min(w, h)
     if min_aspect > 0:
         aspect = float(long_side / (short_side + 1e-6))
         if aspect < min_aspect:
-            return seg
+            return arr
 
     box = cv2.boxPoints(rect)
-    return box.reshape(-1, 2)
+    box = box.reshape(-1, 2)
+    return np.vstack([box, box[0:1]])
 
 
 def _polygon_to_long_axis_line(seg: np.ndarray, min_aspect: float = 0.0) -> np.ndarray:
-    if seg.shape[0] < 3:
-        return seg
+    arr = np.asarray(seg, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        return arr
 
-    rect = cv2.minAreaRect(seg.astype(np.float32))
+    is_closed = arr.shape[0] >= 4 and np.allclose(arr[0], arr[-1])
+    core = arr[:-1] if is_closed else arr
+    if not is_closed or core.shape[0] < 3:
+        return arr
+
+    rect = cv2.minAreaRect(core.astype(np.float32))
     (cx, cy), (w, h), angle = rect
     if w <= 0 or h <= 0:
-        return seg
+        return arr
 
     long_side = max(w, h)
     short_side = min(w, h)
     if min_aspect > 0:
         aspect = float(long_side / (short_side + 1e-6))
         if aspect < min_aspect:
-            return seg
+            return arr
 
     if w >= h:
         theta = np.deg2rad(angle)
@@ -427,14 +440,88 @@ def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.
     return _extract_centerline_delaunay(ring, eps_coeff)
 
 
-def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
-    if seg.shape[0] <= 3 or not steps:
-        return seg
+def _is_closed_ring(seg: np.ndarray) -> bool:
+    return bool(seg.ndim == 2 and seg.shape[0] >= 4 and np.allclose(seg[0], seg[-1]))
 
-    out = seg
+
+def _strip_closing_point(seg: np.ndarray) -> np.ndarray:
+    return seg[:-1] if _is_closed_ring(seg) else seg
+
+
+def _restore_geometry(seg: np.ndarray, was_closed: bool) -> np.ndarray:
+    arr = np.asarray(seg, dtype=np.float32)
+    if was_closed and arr.ndim == 2 and arr.shape[0] >= 3 and not np.allclose(arr[0], arr[-1]):
+        return np.vstack([arr, arr[0:1]]).astype(np.float32)
+    return arr.astype(np.float32)
+
+
+def _geometry_scale(seg: np.ndarray) -> float:
+    arr = _strip_closing_point(np.asarray(seg, dtype=np.float32))
+    if arr.ndim != 2 or arr.shape[0] == 0:
+        return 0.0
+    x_min, y_min = arr.min(axis=0)
+    x_max, y_max = arr.max(axis=0)
+    return float(max(x_max - x_min, y_max - y_min))
+
+
+def _simplify_open_line(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarray:
+    arr = np.asarray(seg, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[0] < 2 or mode == "none":
+        return arr
+    if mode == "convex_hull":
+        return arr
+
+    size = _geometry_scale(arr)
+    if size <= 1e-6:
+        return arr
+
+    if mode == "visvalingam_whyatt":
+        threshold_area2 = (size * DEFAULT_SIMPLIFY_EPS_RATIO * max(0.1, float(eps_coeff))) ** 2
+        return _visvalingam_whyatt_open(arr, threshold_area2)
+
+    eps = size * DEFAULT_SIMPLIFY_EPS_RATIO * float(eps_coeff)
+    approx = cv2.approxPolyDP(arr, eps, closed=False)
+    return approx.reshape(-1, 2).astype(np.float32)
+
+
+def _simplify_geometry(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarray:
+    arr = np.asarray(seg, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[0] < 2 or mode == "none":
+        return arr
+
+    was_closed = _is_closed_ring(arr)
+    core = _strip_closing_point(arr)
+    if not was_closed:
+        return _simplify_open_line(core, mode, eps_coeff)
+
+    if core.shape[0] <= 3:
+        return _restore_geometry(core, True)
+
+    if mode == "convex_hull":
+        hull = cv2.convexHull(core.astype(np.float32))
+        return _restore_geometry(hull.reshape(-1, 2), True)
+
+    if mode == "visvalingam_whyatt":
+        return _restore_geometry(_visvalingam_whyatt_closed(core, eps_coeff), True)
+
+    size = _geometry_scale(core)
+    if size <= 1e-6:
+        return _restore_geometry(core, True)
+
+    eps = size * DEFAULT_SIMPLIFY_EPS_RATIO * float(eps_coeff)
+    approx = cv2.approxPolyDP(core.astype(np.float32), eps, closed=True)
+    return _restore_geometry(approx.reshape(-1, 2), True)
+
+
+def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
+    arr = np.asarray(seg, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[0] < 2 or not steps:
+        return arr
+
+    out = arr
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -443,75 +530,113 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
         eps_coeff = float(step.get("eps_coeff", 1.0))
         min_aspect = max(0.0, float(step.get("min_aspect", 0.0)))
         for _ in range(count):
-            if name == "min_area_rect":
+            if name in {"convex_hull", "rdp", "visvalingam_whyatt"}:
+                out = _simplify_geometry(out, name, eps_coeff)
+            elif name == "min_area_rect":
                 out = _polygon_to_min_area_rect(out, min_aspect=min_aspect)
             elif name == "export_line":
                 out = _polygon_to_long_axis_line(out, min_aspect=min_aspect)
-            elif name == "pca":
-                # pca 為 class-wise 後處理（需跨物件統計方向），此處先略過
+    return out.astype(np.float32)
+
+
+def _apply_object_lane_line(objects: List[Dict[str, Any]], step: Optional[Dict[str, Any]]):
+    if not objects or not step:
+        return
+
+    if str(step.get("name", "")).strip().lower() != "polygon_to_lane_line":
+        return
+
+    class_filter = step.get("class_filter")
+    count = max(1, int(step.get("count", 1)))
+
+    for _ in range(count):
+        for obj in objects:
+            cid = int(obj.get("class_id", -1))
+            if class_filter is not None and cid not in class_filter:
                 continue
-            elif name == "polygon_to_lane_line":
-                # 需在 object-level 聚合所有點，此處先略過
+
+            polys = obj.get("polygons", [])
+            if not polys:
                 continue
+
+            eps_coeff = float(step.get("eps_coeff", 1.0))
+            extracted_lines: List[np.ndarray] = []
+            all_points: List[List[float]] = []
+
+            for poly in polys:
+                arr = np.asarray(poly, dtype=np.float32)
+                if arr.ndim != 2 or arr.shape[0] < 2:
+                    continue
+
+                is_closed = _is_closed_ring(arr)
+                if is_closed:
+                    ring_line = _ring_to_lane_line(arr, eps_coeff=eps_coeff)
+                    if ring_line is not None and ring_line.shape[0] >= 2:
+                        extracted_lines.append(ring_line)
+                    arr = arr[:-1]
+
+                if arr.shape[0] >= 2:
+                    all_points.extend(arr[:, :2].astype(float).tolist())
+
+            if not extracted_lines and len(all_points) >= 2:
+                fallback = _points_to_lane_line(np.asarray(all_points, dtype=np.float32), eps_coeff=eps_coeff)
+                if fallback is not None and fallback.shape[0] >= 2:
+                    extracted_lines.append(fallback)
+
+            if not extracted_lines:
+                continue
+
+            obj["polygons"] = [ln.astype(float).tolist() for ln in extracted_lines]
+
+
+def _sync_line_string_payloads(objects: List[Dict[str, Any]]):
+    for obj in objects:
+        normalized_polys: List[List[List[float]]] = []
+        line_strings: List[Dict[str, Any]] = []
+
+        for poly in obj.get("polygons", []):
+            arr = np.asarray(poly, dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[0] < 2:
+                continue
+
+            if _is_closed_ring(arr):
+                coords = _close_ring(_strip_closing_point(arr).astype(float).tolist())
             else:
-                out = _simplify_segment(out, name, eps_coeff)
-            if out.shape[0] <= 3:
-                break
-    return out
+                coords = arr.astype(float).tolist()
+                line_strings.append({"type": "LineString", "coordinates": coords})
+
+            normalized_polys.append(coords)
+
+        obj["polygons"] = normalized_polys
+        if line_strings:
+            obj["line_strings"] = line_strings
+        else:
+            obj.pop("line_strings", None)
 
 
-def _apply_object_lane_line(objects: List[Dict[str, Any]], steps: Optional[List[Dict[str, Any]]]):
+def _apply_ordered_polygon_steps(objects: List[Dict[str, Any]], steps: Optional[List[Dict[str, Any]]]):
     if not objects or not steps:
         return
 
-    lane_steps = [st for st in steps if str(st.get("name", "")).strip().lower() == "polygon_to_lane_line"]
-    if not lane_steps:
-        return
-
-    for step in lane_steps:
-        class_filter = step.get("class_filter")
-        count = max(1, int(step.get("count", 1)))
-
-        for _ in range(count):
+    for step in steps:
+        name = str(step.get("name", "")).strip().lower()
+        if name in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line"}:
             for obj in objects:
                 cid = int(obj.get("class_id", -1))
-                if class_filter is not None and cid not in class_filter:
-                    continue
-
-                polys = obj.get("polygons", [])
-                if not polys:
-                    continue
-
-                eps_coeff = float(step.get("eps_coeff", 1.0))
-                extracted_lines: List[np.ndarray] = []
-                all_points: List[List[float]] = []
-
-                for poly in polys:
+                updated_polys: List[List[List[float]]] = []
+                for poly in obj.get("polygons", []):
                     arr = np.asarray(poly, dtype=np.float32)
                     if arr.ndim != 2 or arr.shape[0] < 2:
                         continue
+                    updated = _apply_polygon_steps(arr, [step], cid)
+                    updated_polys.append(updated.astype(float).tolist())
+                obj["polygons"] = updated_polys
+        elif name == "polygon_to_lane_line":
+            _apply_object_lane_line(objects, step)
+        elif name == "pca":
+            _apply_pca_alignment(objects, step)
 
-                    is_closed = arr.shape[0] >= 3 and np.allclose(arr[0], arr[-1])
-                    if is_closed:
-                        ring_line = _ring_to_lane_line(arr, eps_coeff=eps_coeff)
-                        if ring_line is not None and ring_line.shape[0] >= 2:
-                            extracted_lines.append(ring_line)
-                        arr = arr[:-1]
-
-                    if arr.shape[0] >= 2:
-                        all_points.extend(arr[:, :2].astype(float).tolist())
-
-                if not extracted_lines and len(all_points) >= 2:
-                    fallback = _points_to_lane_line(np.asarray(all_points, dtype=np.float32), eps_coeff=eps_coeff)
-                    if fallback is not None and fallback.shape[0] >= 2:
-                        extracted_lines.append(fallback)
-
-                if not extracted_lines:
-                    continue
-
-                line_payload = [ln.astype(float).tolist() for ln in extracted_lines]
-                obj["polygons"] = line_payload
-                obj["line_strings"] = [{"type": "LineString", "coordinates": pts} for pts in line_payload]
+    _sync_line_string_payloads(objects)
 
 
 
@@ -606,81 +731,79 @@ def _cluster_line_orientations(units: List[np.ndarray], min_cosine: float = 0.94
     return output
 
 
-def _apply_pca_alignment(objects: List[Dict[str, Any]], steps: Optional[List[Dict[str, Any]]]):
-    if not objects or not steps:
+def _apply_pca_alignment(objects: List[Dict[str, Any]], step: Optional[Dict[str, Any]]):
+    if not objects or not step:
         return
 
-    pca_steps = [st for st in steps if str(st.get("name", "")).strip().lower() == "pca"]
-    if not pca_steps:
+    if str(step.get("name", "")).strip().lower() != "pca":
         return
 
-    for step in pca_steps:
-        class_filter = step.get("class_filter")
-        count = max(1, int(step.get("count", 1)))
-        alpha = float(step.get("eps_coeff", 1.0))
-        alpha = max(0.0, min(1.0, alpha))
+    class_filter = step.get("class_filter")
+    count = max(1, int(step.get("count", 1)))
+    alpha = float(step.get("eps_coeff", 1.0))
+    alpha = max(0.0, min(1.0, alpha))
 
-        for _ in range(count):
-            cross_class = bool(step.get("pca_cross_class", False))
-            grouped_entries: Dict[str, List[Dict[str, Any]]] = {}
-            for obj_idx, obj in enumerate(objects):
-                cid = int(obj.get("class_id", -1))
-                if class_filter is not None and cid not in class_filter:
+    for _ in range(count):
+        cross_class = bool(step.get("pca_cross_class", False))
+        grouped_entries: Dict[str, List[Dict[str, Any]]] = {}
+        for obj_idx, obj in enumerate(objects):
+            cid = int(obj.get("class_id", -1))
+            if class_filter is not None and cid not in class_filter:
+                continue
+
+            for poly_idx, poly in enumerate(obj.get("polygons", [])):
+                seg = np.asarray(poly, dtype=np.float32)
+                line = _line_endpoints(seg)
+                if line is None:
+                    continue
+                unit = _line_unit_direction(line)
+                if unit is None:
+                    continue
+                key = "__cross_class__" if cross_class else str(cid)
+                grouped_entries.setdefault(key, []).append(
+                    {
+                        "obj_idx": obj_idx,
+                        "poly_idx": poly_idx,
+                        "line": line,
+                        "unit": unit,
+                    }
+                )
+
+        for entries in grouped_entries.values():
+            if not entries:
+                continue
+
+            units = [e["unit"] for e in entries]
+            pca_min_cosine = float(step.get("pca_min_cosine", 0.94))
+            pca_min_cosine = max(0.0, min(1.0, pca_min_cosine))
+            clusters = _cluster_line_orientations(units, min_cosine=pca_min_cosine)
+
+            for cluster in clusters:
+                axis = cluster.get("axis")
+                if axis is None:
                     continue
 
-                for poly_idx, poly in enumerate(obj.get("polygons", [])):
-                    seg = np.asarray(poly, dtype=np.float32)
-                    line = _line_endpoints(seg)
-                    if line is None:
-                        continue
-                    unit = _line_unit_direction(line)
-                    if unit is None:
-                        continue
-                    key = "__cross_class__" if cross_class else str(cid)
-                    grouped_entries.setdefault(key, []).append(
-                        {
-                            "obj_idx": obj_idx,
-                            "poly_idx": poly_idx,
-                            "line": line,
-                            "unit": unit,
-                        }
-                    )
-
-            for _, entries in grouped_entries.items():
-                if not entries:
-                    continue
-
-                units = [e["unit"] for e in entries]
-                pca_min_cosine = float(step.get("pca_min_cosine", 0.94))
-                pca_min_cosine = max(0.0, min(1.0, pca_min_cosine))
-                clusters = _cluster_line_orientations(units, min_cosine=pca_min_cosine)
-
-                for cluster in clusters:
-                    axis = cluster.get("axis")
-                    if axis is None:
+                for member_idx in cluster["members"]:
+                    entry = entries[member_idx]
+                    line = entry["line"]
+                    p1, p2 = line[0], line[1]
+                    center = 0.5 * (p1 + p2)
+                    v = p2 - p1
+                    length = float(np.linalg.norm(v))
+                    if length <= 1e-6:
                         continue
 
-                    for member_idx in cluster["members"]:
-                        entry = entries[member_idx]
-                        line = entry["line"]
-                        p1, p2 = line[0], line[1]
-                        center = 0.5 * (p1 + p2)
-                        v = p2 - p1
-                        length = float(np.linalg.norm(v))
-                        if length <= 1e-6:
-                            continue
+                    u = v / length
+                    target = axis if float(np.dot(u, axis)) >= 0 else -axis
+                    blended = (1.0 - alpha) * u + alpha * target
+                    bn = float(np.linalg.norm(blended))
+                    if bn <= 1e-6:
+                        continue
 
-                        u = v / length
-                        target = axis if float(np.dot(u, axis)) >= 0 else -axis
-                        blended = (1.0 - alpha) * u + alpha * target
-                        bn = float(np.linalg.norm(blended))
-                        if bn <= 1e-6:
-                            continue
-
-                        d = (blended / bn) * (0.5 * length)
-                        n1 = (center - d).astype(float).tolist()
-                        n2 = (center + d).astype(float).tolist()
-                        objects[entry["obj_idx"]]["polygons"][entry["poly_idx"]] = [n1, n2]
+                    d = (blended / bn) * (0.5 * length)
+                    n1 = (center - d).astype(float).tolist()
+                    n2 = (center + d).astype(float).tolist()
+                    objects[entry["obj_idx"]]["polygons"][entry["poly_idx"]] = [n1, n2]
 
 
 def _close_ring(points: List[List[float]]) -> List[List[float]]:
@@ -783,7 +906,6 @@ def build_objects_from_result(
                     continue
 
                 arr = _simplify_segment(arr, simplify_mode, simplify_eps_coeff)
-                arr = _apply_polygon_steps(arr, resolved_polygon_steps, int(cid))
                 polys.append(_close_ring(arr.astype(float).tolist()))
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon
@@ -808,7 +930,6 @@ def build_objects_from_result(
             }
         )
 
-    _apply_object_lane_line(objects, resolved_polygon_steps)
-    _apply_pca_alignment(objects, resolved_polygon_steps)
+    _apply_ordered_polygon_steps(objects, resolved_polygon_steps)
 
     return objects
