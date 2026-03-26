@@ -11,13 +11,19 @@
     --names /home/ubuntu/Desktop/Rontgen/yolov12/data/satellite_road-label-names.txt \
     --val-ratio 0.2 --test-ratio 0.0 --copy
 
-    2. offline augmentation (already done)
-    python /home/ubuntu/Desktop/Rontgen/dataset_utils/seg_augmentation.py \
-    /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/images/train \
-    /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/labels/train \
-    /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/augmented \
-    /home/ubuntu/Desktop/Rontgen/dataset_utils/hyp.yaml \
-    --new_image 2
+    # 2. offline augmentation (already done)
+    # python /home/ubuntu/Desktop/Rontgen/dataset_utils/seg_augmentation.py \
+    # /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/images/train \
+    # /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/labels/train \
+    # /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/augmented \
+    # /home/ubuntu/Desktop/Rontgen/dataset_utils/hyp.yaml \
+    # --new_image 2
+
+    # 3. organize augmented folder for YOLO (already done)
+    # mkdir -p /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/augmented/images
+    # mkdir -p /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/augmented/labels
+    # mv /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/augmented/*.png /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/augmented/images/
+    # mv /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/augmented/*.txt /home/ubuntu/Desktop/Rontgen/dataset/satellite_road/yolodataset/augmented/labels/
 
 ## train @ conda env: yolov12
 

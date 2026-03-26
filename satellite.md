@@ -241,6 +241,12 @@ nohup python /home/ubuntu/Desktop/Rontgen/yolov12/train.py \
     # /home/ubuntu/Desktop/Rontgen/dataset_utils/hyp.yaml \
     # --new_image 2
 
+    # 3. organize augmented folder for YOLO (already done)
+    # mkdir -p /home/ubuntu/Desktop/Rontgen/dataset/satellite/yolodataset/augmented/images
+    # mkdir -p /home/ubuntu/Desktop/Rontgen/dataset/satellite/yolodataset/augmented/labels
+    # mv /home/ubuntu/Desktop/Rontgen/dataset/satellite/yolodataset/augmented/*.png /home/ubuntu/Desktop/Rontgen/dataset/satellite/yolodataset/augmented/images/
+    # mv /home/ubuntu/Desktop/Rontgen/dataset/satellite/yolodataset/augmented/*.txt /home/ubuntu/Desktop/Rontgen/dataset/satellite/yolodataset/augmented/labels/
+
 ## train @ conda env: yolov12
 nohup python /home/ubuntu/Desktop/Rontgen/yolov12/train.py \
   --model /home/ubuntu/Desktop/Rontgen/yolov12/yolov12x-seg.pt \
