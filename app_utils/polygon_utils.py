@@ -333,7 +333,7 @@ def _extract_centerline_delaunay(arr: np.ndarray, eps_coeff: float = 1.0) -> Opt
         p3 = np.array([t[4], t[5]], dtype=np.float32)
         centroid = (p1 + p2 + p3) / 3.0
         
-        if cv2.pointPolygonTest(arr_float32, (float(centroid[0]), float(centroid[1])), True) >= -5.0:
+        if cv2.pointPolygonTest(arr_float32, (float(centroid[0]), float(centroid[1])), True) >= -3.0:
             inside_tris.append((p1, p2, p3, centroid))
             
     if not inside_tris:
