@@ -1,4 +1,8 @@
 import os
+import tempfile
+import json
+import argparse
+import glob
 from typing import List, Optional
 
 import gradio as gr
@@ -335,6 +339,13 @@ def app():
                             column_widths=["150px", "90px", "90px", "120px", "420px"],
                             elem_classes=["polygon-steps-table"],
                         )
+
+                    with gr.Tab("配置管理 (Config)"):
+                        gr.Markdown("### 儲存 / 載入配置\n將目前的「顯示 / 執行」、「Mask 優化」與「Polygon 優化」設定匯出為 JSON，或從檔案還原。")
+                        with gr.Row():
+                            export_config_btn = gr.Button("匯出目前配置", variant="primary")
+                            import_config_file = gr.File(label="匯入配置檔 (.json)", type="filepath")
+                        export_config_file = gr.File(label="下載配置檔", interactive=False)
 
                 # 保留目前 choices 狀態（避免僅從元件讀不到 choices）
                 class_choices_state = gr.State(value=[])
@@ -1238,8 +1249,236 @@ def app():
             outputs=[export_files],
         )
 
+        # ======== 匯出 / 匯入 Config ========
+        def export_ui_config(
+            label_mode_in, show_boxes_in, show_masks_in, show_polygons_in, show_points_in, show_conf_in,
+            selected_classes_in,
+            mask_opt_enable_in, mask_opt_steps_in,
+            polygon_opt_enable_in, polygon_opt_steps_in,
+        ):
+            config = {
+                "display": {
+                    "label_mode": label_mode_in,
+                    "show_boxes": show_boxes_in,
+                    "show_masks": show_masks_in,
+                    "show_polygons": show_polygons_in,
+                    "show_points": show_points_in,
+                    "show_confidence": show_conf_in,
+                },
+                "class_filter": selected_classes_in,
+                "mask_optimizations": {
+                    "enabled": mask_opt_enable_in,
+                    "steps": mask_opt_steps_in.values.tolist() if hasattr(mask_opt_steps_in, "values") else list(mask_opt_steps_in) if mask_opt_steps_in is not None else [],
+                },
+                "polygon_optimizations": {
+                    "enabled": polygon_opt_enable_in,
+                    "steps": polygon_opt_steps_in.values.tolist() if hasattr(polygon_opt_steps_in, "values") else list(polygon_opt_steps_in) if polygon_opt_steps_in is not None else [],
+                }
+            }
+            f = tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w", encoding="utf-8")
+            json.dump(config, f, ensure_ascii=False, indent=2)
+            f.close()
+            return f.name
+
+        export_config_btn.click(
+            fn=export_ui_config,
+            inputs=[
+                label_mode, show_boxes, show_masks, show_polygons, show_points, show_confidence,
+                selected_classes_global,
+                mask_opt_enable, mask_opt_steps,
+                polygon_opt_enable, polygon_opt_steps
+            ],
+            outputs=[export_config_file]
+        )
+
+        def import_ui_config(file_path, current_class_choices):
+            if not file_path:
+                return (gr.update(),)*11 + (gr.update(), gr.update(), gr.update())
+            
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            except Exception:
+                return (gr.update(),)*11 + (gr.update(), gr.update(), gr.update())
+                
+            display = config.get("display", {})
+            label_mode_v = display.get("label_mode", "顯示 class name")
+            show_boxes_v = display.get("show_boxes", True)
+            show_masks_v = display.get("show_masks", True)
+            show_polygons_v = display.get("show_polygons", True)
+            show_points_v = display.get("show_points", False)
+            show_conf_v = display.get("show_confidence", True)
+            
+            classes_v = config.get("class_filter", [])
+            mask_opt = config.get("mask_optimizations", {})
+            mask_opt_en = mask_opt.get("enabled", False)
+            mask_opt_st = mask_opt.get("steps", [])
+            
+            polygon_opt = config.get("polygon_optimizations", {})
+            polygon_opt_en = polygon_opt.get("enabled", False)
+            polygon_opt_st = polygon_opt.get("steps", [])
+
+            valid_set = set(current_class_choices or [])
+            filtered_ui_classes = [c for c in classes_v if c in valid_set]
+
+            return (
+                gr.update(value=label_mode_v),
+                gr.update(value=show_boxes_v),
+                gr.update(value=show_masks_v),
+                gr.update(value=show_polygons_v),
+                gr.update(value=show_points_v),
+                gr.update(value=show_conf_v),
+                classes_v,
+                gr.update(value=filtered_ui_classes),
+                gr.update(value=mask_opt_en),
+                gr.update(value=mask_opt_st),
+                gr.update(value=polygon_opt_en),
+                gr.update(value=polygon_opt_st),
+                classes_v,
+                classes_v,
+            )
+
+        import_config_file.upload(
+            fn=import_ui_config,
+            inputs=[import_config_file, class_choices_state],
+            outputs=[
+                label_mode, show_boxes, show_masks, show_polygons, show_points, show_confidence,
+                selected_classes_global, class_selector,
+                mask_opt_enable, mask_opt_steps,
+                polygon_opt_enable, polygon_opt_steps,
+                step_selected_classes_global, polygon_step_selected_classes_global
+            ]
+        )
+
     return demo
 
 
+def run_cli(args):
+    import cv2
+    from app_utils.inference_runner import infer_image_single
+    from app_utils.inference_optimizations import apply_mask_optimizations_to_result, parse_mask_steps, parse_polygon_steps
+    from app_utils.export_utils import export_results_cache
+
+    with open(args.config, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    display = config.get("display", {})
+    label_mode = display.get("label_mode", "顯示 class name")
+    show_boxes = display.get("show_boxes", True)
+    show_masks = display.get("show_masks", True)
+    show_polygons = display.get("show_polygons", True)
+    show_points = display.get("show_points", False)
+    show_conf = display.get("show_confidence", True)
+    
+    allowed_class_ids = config.get("class_filter", None)
+    if allowed_class_ids is not None:
+         allowed_class_ids = parse_selected_to_ids(allowed_class_ids)
+
+    mask_opt = config.get("mask_optimizations", {})
+    mask_opt_en = mask_opt.get("enabled", False)
+    mask_opt_st = mask_opt.get("steps", [])
+    mask_steps_parsed = parse_mask_steps(mask_opt_st) if mask_opt_en else None
+    
+    polygon_opt = config.get("polygon_optimizations", {})
+    polygon_opt_en = polygon_opt.get("enabled", False)
+    polygon_opt_st = polygon_opt.get("steps", [])
+    polygon_steps_parsed = parse_polygon_steps(polygon_opt_st) if polygon_opt_en else []
+
+    models = [m.strip() for m in args.models.split(",")]
+    
+    # 預先載入所有需要的模型，避免在迴圈中重複 instantiate 導致 CUDA Out Of Memory
+    from ultralytics import YOLO
+    loaded_models = {mid: YOLO(mid) for mid in models}
+    
+    input_path = args.input
+    if os.path.isdir(input_path):
+        image_files = []
+        for ext in ('*.jpg', '*.jpeg', '*.png', '*.bmp'):
+            image_files.extend(glob.glob(os.path.join(input_path, ext)))
+            image_files.extend(glob.glob(os.path.join(input_path, ext.upper())))
+        # Windows case-insensitive deduplication
+        image_files = sorted({os.path.abspath(f) for f in image_files})
+    else:
+        image_files = [input_path]
+        
+    os.makedirs(args.output, exist_ok=True)
+    
+    try:
+        from tqdm import tqdm
+        progress_bar = tqdm(image_files, desc="Batch Processing", unit="img")
+    except ImportError:
+        progress_bar = image_files
+        
+    for img_path in progress_bar:
+        fname = os.path.basename(img_path)
+        if not hasattr(progress_bar, 'update'):
+            print(f"Processing {fname}...")
+        else:
+            progress_bar.set_postfix({"file": fname})
+            
+        img = cv2.imread(img_path)
+        if img is None:
+            continue
+        
+        img_h, img_w = img.shape[:2]
+        image_info = {"file_name": fname, "width": img_w, "height": img_h}
+        
+        results_cache = {}
+        for mid in models:
+            model = loaded_models[mid]
+            device_val = None if args.device == "auto" else args.device
+            predict_kwargs = {"source": img_path, "imgsz": args.imgsz, "conf": args.conf}
+            if device_val:
+                predict_kwargs["device"] = device_val
+            
+            results = model.predict(**predict_kwargs)
+            
+            if mask_opt_en and mask_steps_parsed and results:
+                results[0] = apply_mask_optimizations_to_result(results[0], mask_opt_en, mask_steps_parsed)
+                
+            from app_utils.inference_render import annotate_from_results
+            final_bgr = annotate_from_results(
+                results[0], label_mode, show_boxes, show_masks, show_polygons, show_points, show_conf,
+                "none", 1.0, allowed_class_ids, polygon_steps_parsed
+            )
+            
+            results_cache[mid] = results
+            
+            if args.save_img:
+                import re
+                sanitized_mid = re.sub(r'[^a-zA-Z0-9_\-]', '_', os.path.splitext(os.path.basename(mid))[0])
+                base_name = os.path.splitext(fname)[0]
+                out_img_path = os.path.join(args.output, f"{base_name}__{sanitized_mid}.jpg")
+                cv2.imwrite(out_img_path, final_bgr)
+        
+        export_results_cache(
+            results_cache,
+            image_info,
+            out_dir=args.output,
+            allowed_class_ids=allowed_class_ids,
+            simplify_mode="none",
+            simplify_eps_coeff=1.0,
+            polygon_opt_steps=polygon_steps_parsed
+        )
+    print("Batch processing complete.")
+
 if __name__ == "__main__":
-    app().launch()
+    parser = argparse.ArgumentParser(description="YOLOv12 Inference App & CLI")
+    parser.add_argument("-i", "--input", type=str, help="Input image or directory for CLI mode")
+    parser.add_argument("-o", "--output", type=str, default="./output", help="Output directory for JSON/images")
+    parser.add_argument("-m", "--models", type=str, default="yolov12m.pt", help="Comma-separated model names/paths")
+    parser.add_argument("-c", "--config", type=str, required=False, help="Path to exported config JSON")
+    parser.add_argument("--imgsz", type=int, default=640, help="Image size")
+    parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold")
+    parser.add_argument("--device", type=str, default="auto", help="Execution device (auto, cpu, cuda:0, etc.)")
+    parser.add_argument("--save-img", action="store_true", default=True, help="Save annotated images in CLI mode")
+    parser.add_argument("--no-save-img", dest="save_img", action="store_false", help="Do not save annotated images")
+
+    args, unknown = parser.parse_known_args()
+    if args.input:
+        if not args.config:
+            print("Error: --config is required in CLI mode.")
+        else:
+            run_cli(args)
+    else:
+        app().launch()
