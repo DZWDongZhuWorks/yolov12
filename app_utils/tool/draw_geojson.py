@@ -266,7 +266,9 @@ def main():
 
     # 1. 讀取影像
     print(f"[Info] 讀取影像: {img_path}")
-    image = cv2.imread(str(img_path))
+    # 使用 numpy.fromfile 和 cv2.imdecode 來支援包含中文的路徑
+    image_data = np.fromfile(str(img_path), dtype=np.uint8)
+    image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
     if image is None:
         raise FileNotFoundError(f"無法讀取影像: {img_path}")
 
@@ -293,8 +295,14 @@ def main():
     )
 
     # 5. 存檔
-    cv2.imwrite(str(out_path), result_img)
-    print(f"[Success] 繪製完成！結果已儲存至: {out_path}")
+    # 使用 cv2.imencode 和 numpy.tofile 來支援包含中文的路徑存檔
+    ext = out_path.suffix if out_path.suffix else ".jpg"
+    is_success, im_buf = cv2.imencode(ext, result_img)
+    if is_success:
+        im_buf.tofile(str(out_path))
+        print(f"[Success] 繪製完成！結果已儲存至: {out_path}")
+    else:
+        print(f"[Error] 無法編碼並儲存影像至: {out_path}")
 
 if __name__ == "__main__":
     main()
