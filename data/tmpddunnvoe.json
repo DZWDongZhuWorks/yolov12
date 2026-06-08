@@ -1,0 +1,57 @@
+{
+  "display": {
+    "label_mode": "顯示 class name",
+    "show_boxes": true,
+    "show_masks": true,
+    "show_polygons": true,
+    "show_points": true,
+    "show_confidence": true
+  },
+  "class_filter": [
+    "5: white_lane_line"
+  ],
+  "mask_optimizations": {
+    "enabled": true,
+    "steps": [
+      [
+        "distance_dilate",
+        true,
+        2,
+        3,
+        3,
+        0.5,
+        0,
+        0,
+        0.1,
+        "5: white_lane_line"
+      ],
+      [
+        "merge",
+        true,
+        2,
+        3,
+        3,
+        0.5,
+        0,
+        0,
+        0.1,
+        "5: white_lane_line"
+      ]
+    ]
+  },
+  "polygon_optimizations": {
+    "enabled": true,
+    "steps": [
+      [
+        "polygon_to_lane_line",
+        true,
+        1,
+        1,
+        0,
+        0.94,
+        false,
+        "5: white_lane_line"
+      ]
+    ]
+  }
+}

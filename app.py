@@ -119,7 +119,7 @@ def app():
                         show_boxes = gr.Checkbox(value=True, label="顯示 bbox 外框")
                         show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
                         show_polygons = gr.Checkbox(value=True, label="顯示 polygon 邊界")
-                        show_points = gr.Checkbox(value=False, label="顯示 polygon 點")
+                        show_points = gr.Checkbox(value=True, label="顯示 polygon 點")
                         show_confidence = gr.Checkbox(value=True, label="顯示信心值 (conf)")
 
                         yolov12_infer = gr.Button(value="Detect Objects (Run)")
@@ -1359,29 +1359,49 @@ def run_cli(args):
     from app_utils.inference_optimizations import apply_mask_optimizations_to_result, parse_mask_steps, parse_polygon_steps
     from app_utils.export_utils import export_results_cache
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    # === 1. 定義所有參數的預設值 ===
+    label_mode = "顯示 class name"
+    show_boxes = True
+    show_masks = True
+    show_polygons = True
+    show_points = True
+    show_conf = True
+    allowed_class_ids = None
+    mask_opt_en = False
+    mask_opt_st = []
+    polygon_opt_en = False
+    polygon_opt_st = []
 
-    display = config.get("display", {})
-    label_mode = display.get("label_mode", "顯示 class name")
-    show_boxes = display.get("show_boxes", True)
-    show_masks = display.get("show_masks", True)
-    show_polygons = display.get("show_polygons", True)
-    show_points = display.get("show_points", False)
-    show_conf = display.get("show_confidence", True)
-    
-    allowed_class_ids = config.get("class_filter", None)
-    if allowed_class_ids is not None:
-         allowed_class_ids = parse_selected_to_ids(allowed_class_ids)
+    # === 2. 如果有提供 config，則從檔案覆蓋預設值 ===
+    if args.config and os.path.exists(args.config):
+        print(f"Loading config from {args.config}...")
+        with open(args.config, "r", encoding="utf-8") as f:
+            config = json.load(f)
 
-    mask_opt = config.get("mask_optimizations", {})
-    mask_opt_en = mask_opt.get("enabled", False)
-    mask_opt_st = mask_opt.get("steps", [])
+        display = config.get("display", {})
+        label_mode = display.get("label_mode", label_mode)
+        show_boxes = display.get("show_boxes", show_boxes)
+        show_masks = display.get("show_masks", show_masks)
+        show_polygons = display.get("show_polygons", show_polygons)
+        show_points = display.get("show_points", show_points)
+        show_conf = display.get("show_confidence", show_conf)
+        
+        allowed_class_ids = config.get("class_filter", None)
+        if allowed_class_ids is not None:
+            allowed_class_ids = parse_selected_to_ids(allowed_class_ids)
+
+        mask_opt = config.get("mask_optimizations", {})
+        mask_opt_en = mask_opt.get("enabled", False)
+        mask_opt_st = mask_opt.get("steps", [])
+        
+        polygon_opt = config.get("polygon_optimizations", {})
+        polygon_opt_en = polygon_opt.get("enabled", False)
+        polygon_opt_st = polygon_opt.get("steps", [])
+    else:
+        print("No config file provided or file not found. Using default settings (Optimization: OFF).")
+
+    # 解析優化步驟 (如果為空或是 OFF，解析出來會是 None 或空清單)
     mask_steps_parsed = parse_mask_steps(mask_opt_st) if mask_opt_en else None
-    
-    polygon_opt = config.get("polygon_optimizations", {})
-    polygon_opt_en = polygon_opt.get("enabled", False)
-    polygon_opt_st = polygon_opt.get("steps", [])
     polygon_steps_parsed = parse_polygon_steps(polygon_opt_st) if polygon_opt_en else []
 
     models = [m.strip() for m in args.models.split(",")]
@@ -1476,9 +1496,6 @@ if __name__ == "__main__":
 
     args, unknown = parser.parse_known_args()
     if args.input:
-        if not args.config:
-            print("Error: --config is required in CLI mode.")
-        else:
-            run_cli(args)
+        run_cli(args)
     else:
         app().launch()
