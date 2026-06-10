@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import json
 import argparse
@@ -14,7 +15,7 @@ from app_utils.inference import (
     parse_selected_to_ids,
     annotate_from_results,
     apply_mask_optimizations,
-    yolov12_multi_inference_image,
+    yolov12_multi_predict_image,
     yolov12_multi_inference_video,
     get_model_names,
     parse_polygon_steps,
@@ -266,7 +267,7 @@ def app():
                                 step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
                         gr.Markdown(
-                            "可直接編輯下表調整順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位留空 = 全部類別。"
+                            "可直接編輯下表調整順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位留空 = 全部類別。編輯完成後按「套用 Mask 優化並重繪」更新結果。"
                         )
                         mask_opt_steps = gr.Dataframe(
                             headers=[
@@ -301,6 +302,7 @@ def app():
                             column_widths=["120px", "90px", "90px", "120px", "120px", "130px", "150px", "130px", "160px", "420px"],
                             elem_classes=["mask-steps-table"],
                         )
+                        mask_opt_apply = gr.Button(value="套用 Mask 優化並重繪", variant="primary")
 
                     with gr.Tab("Polygon 優化"):
                         gr.Markdown("### Polygon 優化")
@@ -374,7 +376,7 @@ def app():
                                 polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
                         gr.Markdown(
-                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam、polygon_to_lane_line 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`max_area_px` 與 `target_vertices` 用於 small_object_fit（max_area_px=0 表示不檢查大小門檻）；`classes` 欄位留空 = 全部類別。"
+                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam、polygon_to_lane_line 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`max_area_px` 與 `target_vertices` 用於 small_object_fit（max_area_px=0 表示不檢查大小門檻）；`classes` 欄位留空 = 全部類別。編輯完成後按「套用 Polygon 優化並重繪」更新結果。"
                         )
                         polygon_opt_steps = gr.Dataframe(
                             headers=["step", "enabled", "count", "eps_coeff", "min_aspect", "pca_min_cosine", "pca_cross_class", "max_area_px", "target_vertices", "classes"],
@@ -387,6 +389,7 @@ def app():
                             column_widths=["150px", "80px", "80px", "100px", "100px", "110px", "100px", "110px", "120px", "300px"],
                             elem_classes=["polygon-steps-table"],
                         )
+                        polygon_opt_apply = gr.Button(value="套用 Polygon 優化並重繪", variant="primary")
 
                     with gr.Tab("配置管理 (Config)"):
                         gr.Markdown("### 儲存 / 載入配置\n將目前的「顯示 / 執行」、「Mask 優化」與「Polygon 優化」設定匯出為 JSON，或從檔案還原。")
@@ -517,12 +520,14 @@ def app():
 
             # 沒有選到任何模型：清空輸出並維持現有狀態
             if not mids:
+                # 由目前已儲存的自訂模型重建 choices，避免重置回 app 啟動時的清單
+                empty_choices, _ = persist_model_choices(saved_models_in, [])
                 return (
                     gr.update(),  # output_gallery
                     gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),  # v1~v5
                     None,  # last_results
                     None,  # raw_results
-                    gr.update(choices=initial_choices, value=[]),  # model_ids
+                    gr.update(choices=empty_choices, value=[]),  # model_ids
                     saved_models_in,  # saved_models_state
                     gr.update(),  # class_selector
                     class_choices_in or [],  # class_choices_state
@@ -597,23 +602,13 @@ def app():
                         gr.update(value=class_choices_new),
                     )
 
-                # 4-1) 多模型推論
-                _, results_cache = yolov12_multi_inference_image(
+                # 4-1) 多模型推論（不渲染，渲染統一交給 render_gallery_from_results）
+                results_cache = yolov12_multi_predict_image(
                     image_in,
                     mids,
                     image_size_in,
                     conf_th_in,
                     None if device_in == "auto" else device_in,
-                    label_mode_in,
-                    show_boxes_in,
-                    show_masks_in,
-                    show_polygons_in, 
-                    show_points_in,
-                    show_conf_in,
-                    "none",
-                    1.0,
-                    polygon_steps,
-                    allowed_class_ids=allowed_ids,
                 )
 
                 raw_results_cache = results_cache
@@ -636,12 +631,12 @@ def app():
                 )
 
                 # 4-2) 構建 image meta（檔名、寬高）
+                first_result = next(iter(results_cache.values()), [None])[0]
                 width = height = 0
                 try:
-                    if "first_result" not in locals():
-                        first_result = next(iter(results_cache.values()))[0]
-                    h, w = map(int, getattr(first_result, "orig_shape", (0, 0))[:2])
-                    width, height = w, h
+                    if first_result is not None:
+                        h, w = map(int, getattr(first_result, "orig_shape", (0, 0))[:2])
+                        width, height = w, h
                 except Exception:
                     width = height = 0
 
@@ -653,15 +648,10 @@ def app():
                         fname = os.path.basename(str(candidate))
                         break
                 # 再退而求其次從 result.path
-                if not fname:
-                    try:
-                        if "first_result" not in locals():
-                            first_result = next(iter(results_cache.values()))[0]
-                        rp = getattr(first_result, "path", None)
-                        if rp:
-                            fname = os.path.basename(str(rp))
-                    except Exception:
-                        fname = None
+                if not fname and first_result is not None:
+                    rp = getattr(first_result, "path", None)
+                    if rp:
+                        fname = os.path.basename(str(rp))
                 if not fname:
                     fname = "uploaded_image.png"
 
@@ -1131,18 +1121,19 @@ def app():
                 allowed_ids,
             )
 
-        # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪
-        for ctrl in (
-            label_mode,
-            show_boxes,
-            show_masks,
-            show_polygons,
-            show_points,
-            show_confidence,
-            polygon_opt_enable,
-            polygon_opt_steps,
+        # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪；
+        # polygon 步驟表格編輯改由「套用」按鈕觸發，避免每格編輯都重繪
+        for register in (
+            label_mode.change,
+            show_boxes.change,
+            show_masks.change,
+            show_polygons.change,
+            show_points.change,
+            show_confidence.change,
+            polygon_opt_enable.change,
+            polygon_opt_apply.click,
         ):
-            ctrl.change(
+            register(
                 fn=replot_all_filtered,
                 inputs=[
                     last_results,
@@ -1218,8 +1209,9 @@ def app():
             )
             return updated_results, gallery
 
-        for ctrl in (mask_opt_enable, mask_opt_steps):
-            ctrl.change(
+        # 啟用開關即時觸發；步驟表格編輯改由「套用」按鈕觸發，避免每格編輯都重跑完整 mask 管線
+        for register in (mask_opt_enable.change, mask_opt_apply.click):
+            register(
                 fn=update_mask_processing,
                 inputs=[
                     raw_results,
@@ -1358,7 +1350,7 @@ def app():
             show_boxes_v = display.get("show_boxes", True)
             show_masks_v = display.get("show_masks", True)
             show_polygons_v = display.get("show_polygons", True)
-            show_points_v = display.get("show_points", False)
+            show_points_v = display.get("show_points", True)
             show_conf_v = display.get("show_confidence", True)
             
             classes_v = config.get("class_filter", [])
@@ -1408,9 +1400,7 @@ def app():
 
 def run_cli(args):
     import cv2
-    from app_utils.inference_runner import infer_image_single
-    from app_utils.inference_optimizations import apply_mask_optimizations_to_result, parse_mask_steps, parse_polygon_steps
-    from app_utils.export_utils import export_results_cache
+    from app_utils.inference_optimizations import apply_mask_optimizations_to_result, parse_mask_steps
 
     # === 1. 定義所有參數的預設值 ===
     label_mode = "顯示 class name"
@@ -1459,9 +1449,9 @@ def run_cli(args):
 
     models = [m.strip() for m in args.models.split(",")]
     
-    # 預先載入所有需要的模型，避免在迴圈中重複 instantiate 導致 CUDA Out Of Memory
-    from ultralytics import YOLO
-    loaded_models = {mid: YOLO(mid) for mid in models}
+    # 透過共用模型快取預先載入，避免在迴圈中重複 instantiate 導致 CUDA Out Of Memory
+    from app_utils.model_cache import get_model
+    loaded_models = {mid: get_model(mid) for mid in models}
     
     input_path = args.input
     if os.path.isdir(input_path):
@@ -1481,7 +1471,14 @@ def run_cli(args):
         progress_bar = tqdm(image_files, desc="Batch Processing", unit="img")
     except ImportError:
         progress_bar = image_files
-        
+
+    device_val = None if args.device == "auto" else args.device
+    sanitized_model_names = {
+        mid: re.sub(r'[^a-zA-Z0-9_\-]', '_', os.path.splitext(os.path.basename(mid))[0])
+        for mid in models
+    }
+
+
     for img_path in progress_bar:
         fname = os.path.basename(img_path)
         if not hasattr(progress_bar, 'update'):
@@ -1499,29 +1496,27 @@ def run_cli(args):
         results_cache = {}
         for mid in models:
             model = loaded_models[mid]
-            device_val = None if args.device == "auto" else args.device
-            predict_kwargs = {"source": img_path, "imgsz": args.imgsz, "conf": args.conf}
+            # 直接餵入已讀取的影像，避免 predict 再從磁碟讀一次
+            predict_kwargs = {"source": img, "imgsz": args.imgsz, "conf": args.conf}
             if device_val:
                 predict_kwargs["device"] = device_val
-            
-            results = model.predict(**predict_kwargs)
-            
+
+            # 移到 CPU：避免遮罩上色在 GPU 配置大張量導致 OOM（密集場景）
+            results = [r.cpu() for r in model.predict(**predict_kwargs)]
+
             if mask_opt_en and mask_steps_parsed and results:
                 results[0] = apply_mask_optimizations_to_result(results[0], mask_opt_en, mask_steps_parsed)
-                
-            from app_utils.inference_render import annotate_from_results
+
             final_bgr = annotate_from_results(
                 results[0], label_mode, show_boxes, show_masks, show_polygons, show_points, show_conf,
                 "none", 1.0, allowed_class_ids, polygon_steps_parsed
             )
-            
+
             results_cache[mid] = results
-            
+
             if args.save_img:
-                import re
-                sanitized_mid = re.sub(r'[^a-zA-Z0-9_\-]', '_', os.path.splitext(os.path.basename(mid))[0])
                 base_name = os.path.splitext(fname)[0]
-                out_img_path = os.path.join(args.output, f"{base_name}__{sanitized_mid}.jpg")
+                out_img_path = os.path.join(args.output, f"{base_name}__{sanitized_model_names[mid]}.jpg")
                 cv2.imwrite(out_img_path, final_bgr)
         
         export_results_cache(
