@@ -513,6 +513,82 @@ def _simplify_geometry(seg: np.ndarray, mode: str, eps_coeff: float) -> np.ndarr
     return _restore_geometry(approx.reshape(-1, 2), True)
 
 
+def _polygon_fit_small_object(
+    seg: np.ndarray,
+    max_area_px: float,
+    target_vertices: int,
+    min_vertices: int = 3,
+) -> np.ndarray:
+    """
+    為小物件（菱形、倒三角形、箭頭、道路標字等）設計的形狀貼合簡化。
+
+    流程：
+      - 若 bbox 面積 > max_area_px（且 max_area_px > 0）→ 原樣回傳，避免動到大物件。
+      - 否則在 [0, bbox_diag * 0.5] 範圍二分搜尋 cv2.approxPolyDP 的 epsilon，
+        把點數壓到 [min_vertices, target_vertices]。
+      - 不做 convex hull，保留凹凸結構（箭頭凹口、文字凹點得以存活）。
+    """
+    arr = np.asarray(seg, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[0] < 3:
+        return arr
+
+    was_closed = _is_closed_ring(arr)
+    core = _strip_closing_point(arr)
+    n = core.shape[0]
+
+    target_vertices = max(3, int(target_vertices))
+    min_vertices = max(3, int(min_vertices))
+    if min_vertices > target_vertices:
+        min_vertices = target_vertices
+
+    if n <= min_vertices:
+        return _restore_geometry(core, was_closed)
+
+    x_min, y_min = core.min(axis=0)
+    x_max, y_max = core.max(axis=0)
+    bbox_w = float(x_max - x_min)
+    bbox_h = float(y_max - y_min)
+    bbox_area = bbox_w * bbox_h
+    if max_area_px > 0.0 and bbox_area > max_area_px:
+        return _restore_geometry(core, was_closed)
+
+    diag = float(np.hypot(bbox_w, bbox_h))
+    if diag <= 1e-6:
+        return _restore_geometry(core, was_closed)
+
+    if n <= target_vertices:
+        return _restore_geometry(core, was_closed)
+
+    pts_f32 = core.astype(np.float32)
+    lo, hi = 0.0, diag * 0.5
+    best_pts: Optional[np.ndarray] = None
+    best_count = n
+    tol = diag * 1e-4
+
+    for _ in range(24):
+        mid = 0.5 * (lo + hi)
+        approx = cv2.approxPolyDP(pts_f32, mid, closed=True).reshape(-1, 2)
+        cnt = approx.shape[0]
+        if cnt > target_vertices:
+            lo = mid
+            if cnt < best_count and cnt >= min_vertices:
+                best_count = cnt
+                best_pts = approx
+        elif cnt < min_vertices:
+            hi = mid
+        else:
+            best_pts = approx
+            best_count = cnt
+            hi = mid
+        if (hi - lo) <= tol:
+            break
+
+    if best_pts is None or best_pts.shape[0] < 3:
+        return _restore_geometry(core, was_closed)
+
+    return _restore_geometry(best_pts.astype(np.float32), was_closed)
+
+
 def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]], class_id: int) -> np.ndarray:
     arr = np.asarray(seg, dtype=np.float32)
     if arr.ndim != 2 or arr.shape[0] < 2 or not steps:
@@ -521,7 +597,7 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
     out = arr
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line"}:
+        if name not in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "small_object_fit"}:
             continue
         class_filter = step.get("class_filter")
         if class_filter is not None and class_id not in class_filter:
@@ -529,6 +605,8 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
         count = max(1, int(step.get("count", 1)))
         eps_coeff = float(step.get("eps_coeff", 1.0))
         min_aspect = max(0.0, float(step.get("min_aspect", 0.0)))
+        max_area_px = max(0.0, float(step.get("max_area_px", 5000.0)))
+        target_vertices = max(3, int(step.get("target_vertices", 8)))
         for _ in range(count):
             if name in {"convex_hull", "rdp", "visvalingam_whyatt"}:
                 out = _simplify_geometry(out, name, eps_coeff)
@@ -536,6 +614,8 @@ def _apply_polygon_steps(seg: np.ndarray, steps: Optional[List[Dict[str, Any]]],
                 out = _polygon_to_min_area_rect(out, min_aspect=min_aspect)
             elif name == "export_line":
                 out = _polygon_to_long_axis_line(out, min_aspect=min_aspect)
+            elif name == "small_object_fit":
+                out = _polygon_fit_small_object(out, max_area_px, target_vertices)
     return out.astype(np.float32)
 
 
@@ -620,7 +700,7 @@ def _apply_ordered_polygon_steps(objects: List[Dict[str, Any]], steps: Optional[
 
     for step in steps:
         name = str(step.get("name", "")).strip().lower()
-        if name in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line"}:
+        if name in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "small_object_fit"}:
             for obj in objects:
                 cid = int(obj.get("class_id", -1))
                 updated_polys: List[List[List[float]]] = []

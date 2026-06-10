@@ -20,6 +20,39 @@ from app_utils.inference import (
     parse_polygon_steps,
 )
 from app_utils.export_utils import export_results_cache
+from app_utils.inference_optimizations import (
+    DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA,
+    DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES,
+)
+
+
+def _pad_polygon_rows(rows):
+    """將舊版 polygon 優化 dataframe row 補齊到 10 欄。
+
+    舊 schema：[step, enabled, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class, classes] (8 欄)
+    更舊：     [step, enabled, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class] (7 欄)
+    新 schema：[step, enabled, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class, max_area_px, target_vertices, classes] (10 欄)
+    """
+    if rows is None:
+        return []
+    out = []
+    for r in rows:
+        if r is None:
+            continue
+        r = list(r)
+        if len(r) == 8:
+            r = r[:7] + [DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA,
+                         DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES,
+                         r[7]]
+        elif len(r) == 7:
+            r = r + [DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA,
+                     DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES,
+                     ""]
+        while len(r) < 10:
+            r.append(None)
+        out.append(r[:10])
+    return out
+
 
 APP_CSS = """
 .app-main-row {
@@ -275,7 +308,7 @@ def app():
                         with gr.Row():
                             polygon_opt_method = gr.Dropdown(
                                 label="新增步驟",
-                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "polygon_to_lane_line", "pca"],
+                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "polygon_to_lane_line", "pca", "small_object_fit"],
                                 value="rdp",
                             )
                             polygon_opt_count = gr.Slider(
@@ -312,6 +345,21 @@ def app():
                                 label="PCA 跨類別共同計算（限本步驟 classes 範圍）",
                                 value=False,
                             )
+                        with gr.Row():
+                            polygon_step_max_area_px = gr.Slider(
+                                label="Max Area px² (small_object_fit；0 = 不檢查)",
+                                minimum=0.0,
+                                maximum=50000.0,
+                                step=100.0,
+                                value=5000.0,
+                            )
+                            polygon_step_target_vertices = gr.Slider(
+                                label="Target Vertices (small_object_fit)",
+                                minimum=3,
+                                maximum=32,
+                                step=1,
+                                value=8,
+                            )
                         polygon_step_class_filter_query = gr.Textbox(
                             label="類別查詢",
                             placeholder="輸入關鍵字或 class id",
@@ -326,17 +374,17 @@ def app():
                                 polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
                                 polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
                         gr.Markdown(
-                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam、polygon_to_lane_line 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`classes` 欄位留空 = 全部類別。"
+                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam、polygon_to_lane_line 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`max_area_px` 與 `target_vertices` 用於 small_object_fit（max_area_px=0 表示不檢查大小門檻）；`classes` 欄位留空 = 全部類別。"
                         )
                         polygon_opt_steps = gr.Dataframe(
-                            headers=["step", "enabled", "count", "eps_coeff", "min_aspect", "pca_min_cosine", "pca_cross_class", "classes"],
-                            datatype=["str", "bool", "number", "number", "number", "number", "bool", "str"],
+                            headers=["step", "enabled", "count", "eps_coeff", "min_aspect", "pca_min_cosine", "pca_cross_class", "max_area_px", "target_vertices", "classes"],
+                            datatype=["str", "bool", "number", "number", "number", "number", "bool", "number", "number", "str"],
                             row_count=0,
-                            col_count=(8, "fixed"),
+                            col_count=(10, "fixed"),
                             wrap=True,
                             label="Polygon 優化流程",
                             type="array",
-                            column_widths=["150px", "90px", "90px", "120px", "420px"],
+                            column_widths=["150px", "80px", "80px", "100px", "100px", "110px", "100px", "110px", "120px", "300px"],
                             elem_classes=["polygon-steps-table"],
                         )
 
@@ -946,6 +994,8 @@ def app():
             min_aspect_in,
             pca_min_cosine_in,
             pca_cross_class_in,
+            max_area_px_in,
+            target_vertices_in,
             class_filter_in,
         ):
             if isinstance(class_filter_in, (list, tuple, set)):
@@ -965,7 +1015,7 @@ def app():
             else:
                 rows = []
 
-            rows.append([method, True, int(count), eps_coeff_in, min_aspect_in, pca_min_cosine_in, bool(pca_cross_class_in), class_filter_snapshot])
+            rows.append([method, True, int(count), eps_coeff_in, min_aspect_in, pca_min_cosine_in, bool(pca_cross_class_in), float(max_area_px_in), int(target_vertices_in), class_filter_snapshot])
             return rows
 
         polygon_opt_add.click(
@@ -978,6 +1028,8 @@ def app():
                 polygon_step_min_aspect,
                 polygon_step_pca_min_cosine,
                 polygon_step_pca_cross_class,
+                polygon_step_max_area_px,
+                polygon_step_target_vertices,
                 polygon_step_class_filter,
             ],
             outputs=[polygon_opt_steps],
@@ -1317,6 +1369,7 @@ def app():
             polygon_opt = config.get("polygon_optimizations", {})
             polygon_opt_en = polygon_opt.get("enabled", False)
             polygon_opt_st = polygon_opt.get("steps", [])
+            polygon_opt_st = _pad_polygon_rows(polygon_opt_st)
 
             valid_set = set(current_class_choices or [])
             filtered_ui_classes = [c for c in classes_v if c in valid_set]

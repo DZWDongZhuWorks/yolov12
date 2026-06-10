@@ -13,6 +13,8 @@ DEFAULT_MAX_HOLE_AREA = 0
 DEFAULT_POLYGON_EPS_COEFF = 1.0
 DEFAULT_POLYGON_MIN_ASPECT = 0.0
 DEFAULT_POLYGON_PCA_MIN_COSINE = 0.94
+DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA = 5000.0
+DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES = 8
 
 
 def _coerce_int(value, default: int) -> int:
@@ -174,7 +176,10 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
 
 
 def _build_polygon_step(name: str, count: int, eps_coeff=1.0, min_aspect=0.0,
-                        pca_min_cosine=0.94, pca_cross_class=False, classes=None) -> Dict[str, Any]:
+                        pca_min_cosine=0.94, pca_cross_class=False,
+                        max_area_px=DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA,
+                        target_vertices=DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES,
+                        classes=None) -> Dict[str, Any]:
     pca_cos = max(0.0, min(1.0, _coerce_float(pca_min_cosine, DEFAULT_POLYGON_PCA_MIN_COSINE)))
     return {
         "name": name,
@@ -183,6 +188,8 @@ def _build_polygon_step(name: str, count: int, eps_coeff=1.0, min_aspect=0.0,
         "min_aspect": max(0.0, _coerce_float(min_aspect, DEFAULT_POLYGON_MIN_ASPECT)),
         "pca_min_cosine": pca_cos,
         "pca_cross_class": bool(pca_cross_class),
+        "max_area_px": max(0.0, _coerce_float(max_area_px, DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA)),
+        "target_vertices": max(3, _coerce_int(target_vertices, DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES)),
         "classes": _normalize_class_filter(classes),
     }
 
@@ -196,7 +203,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
     elif not steps_input:
         return []
 
-    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line"}
+    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line", "small_object_fit"}
     steps: List[Dict[str, Any]] = []
 
     if isinstance(steps_input, str):
@@ -218,6 +225,8 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
                 min_aspect=_coerce_float(chunks[3] if len(chunks) > 3 else DEFAULT_POLYGON_MIN_ASPECT, DEFAULT_POLYGON_MIN_ASPECT),
                 pca_min_cosine=_coerce_float(chunks[4] if len(chunks) > 4 else DEFAULT_POLYGON_PCA_MIN_COSINE, DEFAULT_POLYGON_PCA_MIN_COSINE),
                 pca_cross_class=str(chunks[5]).lower() in {"1", "true", "yes", "y", "on"} if len(chunks) > 5 else False,
+                max_area_px=_coerce_float(chunks[6] if len(chunks) > 6 else DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA, DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA),
+                target_vertices=_coerce_int(chunks[7] if len(chunks) > 7 else DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES, DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES),
             ))
         return steps
 
@@ -247,7 +256,16 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
             if count <= 0:
                 continue
             eps_coeff = row[count_index + 1] if len(row) > count_index + 1 else DEFAULT_POLYGON_EPS_COEFF
-            if len(row) > count_index + 5:
+            max_area_px = DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA
+            target_vertices = DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES
+            if len(row) > count_index + 7:
+                min_aspect = row[count_index + 2]
+                pca_min_cosine = row[count_index + 3]
+                pca_cross_class = bool(row[count_index + 4]) if row[count_index + 4] is not None else False
+                max_area_px = row[count_index + 5]
+                target_vertices = row[count_index + 6]
+                classes = row[count_index + 7]
+            elif len(row) > count_index + 5:
                 min_aspect = row[count_index + 2]
                 pca_min_cosine = row[count_index + 3]
                 pca_cross_class = bool(row[count_index + 4]) if row[count_index + 4] is not None else False
@@ -262,7 +280,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
                 pca_min_cosine = DEFAULT_POLYGON_PCA_MIN_COSINE
                 pca_cross_class = False
                 classes = row[count_index + 2] if len(row) > count_index + 2 else None
-            steps.append(_build_polygon_step(name, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class, classes))
+            steps.append(_build_polygon_step(name, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class, max_area_px, target_vertices, classes))
     except Exception:
         return []
 

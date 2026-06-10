@@ -56,3 +56,54 @@ python app.py --input ./my_images_folder --output ./my_results --config my_confi
 2. **`test_01__yolov12m.jpg`**（若無關閉 `--save-img`）：根據 Config 設定中所決定是否隱藏的標籤與邊界畫布。
 
 這套操作流程為您的電腦從「參數調研」到「落地批次執行」帶來了最完全的自動化支援！
+
+---
+
+## 三、 Polygon 優化步驟：`small_object_fit`（小物件形狀貼合）
+
+針對**菱形、倒三角形、箭頭、道路標字**等小型地面標線設計的 polygon 優化步驟。其他既有步驟（`rdp`、`min_area_rect`、`polygon_to_lane_line` 等）都是為長條形/矩形/線狀物件設計的；`small_object_fit` 則專門處理小物件：保留原本的凹凸形狀，但把點數壓到指定目標值。
+
+### 運作邏輯
+
+1. **大小門檻**：若 polygon 的 bbox 面積 > `max_area_px`（且 `max_area_px > 0`），原樣回傳（不動到大物件，例如車道線）。`max_area_px = 0` 表示完全不檢查。
+2. **二分搜尋 epsilon**：在 `cv2.approxPolyDP` 上二分搜尋，把點數壓到 `[3, target_vertices]`。
+3. **保留凹凸**：不做 convex hull，確保箭頭凹口與「T」字凹角等語意點得以存活。
+
+### 專屬參數（dataframe 第 8、9 欄）
+
+| 參數 | 預設 | 說明 |
+| :--- | :--- | :--- |
+| `max_area_px` | `5000.0` | bbox 面積上限（像素²）；0 = 不檢查 |
+| `target_vertices` | `8` | 目標頂點數上限（3 ~ 32） |
+
+### Config JSON 範例
+
+Dataframe 欄位順序：`step, enabled, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class, max_area_px, target_vertices, classes`
+
+```json
+{
+  "polygon_optimizations": {
+    "enabled": true,
+    "steps": [
+      ["small_object_fit", true, 1, 1.0, 0.0, 0.94, false, 5000.0, 8, "12, 13, 14, 15"]
+    ]
+  }
+}
+```
+
+複合配置：箭頭與菱形先凸化再壓點、文字用較大目標頂點數保留筆畫：
+
+```json
+{
+  "polygon_optimizations": {
+    "enabled": true,
+    "steps": [
+      ["convex_hull",      true, 1, 1.0, 0.0, 0.94, false, 5000.0, 8,  "arrow, rhombus"],
+      ["small_object_fit", true, 1, 1.0, 0.0, 0.94, false, 5000.0, 6,  "arrow, rhombus"],
+      ["small_object_fit", true, 1, 1.0, 0.0, 0.94, false, 8000.0, 16, "road_text"]
+    ]
+  }
+}
+```
+
+> 舊版 8 欄 config 仍可被自動讀入並補上預設的 `max_area_px = 5000.0` 與 `target_vertices = 8`。
