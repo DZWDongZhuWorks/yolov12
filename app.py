@@ -1,3 +1,4 @@
+import datetime
 import os
 import re
 import tempfile
@@ -6,6 +7,7 @@ import argparse
 import glob
 from typing import List, Optional
 
+import cv2
 import gradio as gr
 
 from app_utils.config import MAX_MODELS
@@ -426,6 +428,8 @@ def app():
                 class_choices_state = gr.State(value=[])
                 # 保存當前影像中繼資訊（檔名、寬高）
                 image_meta_state = gr.State(value=None)
+                # 當前配置名稱（匯入/匯出 config 時更新，用於下載圖檔命名）
+                config_name_state = gr.State(value=None)
 
                 # Global Selection State (To persist selection even when filtered)
                 selected_classes_global = gr.State(value=[])
@@ -464,6 +468,9 @@ def app():
                 return []
             return selected_ids
 
+        def _fs_safe(name: str) -> str:
+            return re.sub(r"[^\w\-]", "_", str(name), flags=re.UNICODE)
+
         def render_gallery_from_results(
             results_dict,
             label_mode_in,
@@ -474,10 +481,18 @@ def app():
             show_conf_in,
             polygon_steps,
             allowed_ids,
+            image_meta=None,
+            config_name=None,
         ):
             if not results_dict:
                 return []
 
+            file_name = (image_meta or {}).get("file_name") if isinstance(image_meta, dict) else None
+            image_stem = _fs_safe(os.path.splitext(os.path.basename(file_name))[0]) if file_name else None
+            config_stem = _fs_safe(config_name) if config_name else None
+
+            # 存成具名圖檔讓 Gallery 下載時保留檔名：{原始檔名}__{config}__{模型}.jpg
+            out_dir = tempfile.mkdtemp(prefix="yolo_gallery_")
             gallery = []
             for mid, results in results_dict.items():
                 annotated_bgr = annotate_from_results(
@@ -493,7 +508,16 @@ def app():
                     allowed_ids,
                     polygon_steps,
                 )
-                gallery.append((annotated_bgr[:, :, ::-1], mid))  # BGR -> RGB
+                caption = f"{file_name} | {mid}" if file_name else str(mid)
+                model_stem = _fs_safe(os.path.splitext(os.path.basename(str(mid)))[0])
+                name_parts = [p for p in (image_stem, config_stem, model_stem) if p]
+                out_path = os.path.join(out_dir, "__".join(name_parts) + ".jpg")
+                ok, buf = cv2.imencode(".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                if ok:
+                    buf.tofile(out_path)  # tofile 可處理非 ASCII 路徑
+                    gallery.append((out_path, caption))
+                else:
+                    gallery.append((annotated_bgr[:, :, ::-1], caption))  # 後備：直接給陣列
 
             return gallery
 
@@ -533,6 +557,7 @@ def app():
             saved_models_in,
             class_selected_items_in,
             class_choices_in,
+            config_name_in,
         ):
             polygon_steps = parse_polygon_steps(polygon_opt_steps_in) if polygon_opt_enable_in else []
             # 1) 正規化模型清單（最多 MAX_MODELS 個）
@@ -627,19 +652,7 @@ def app():
                     mask_opt_steps_in,
                 )
 
-                gallery = render_gallery_from_results(
-                    results_cache,
-                    label_mode_in,
-                    show_boxes_in,
-                    show_masks_in,
-                    show_polygons_in,
-                    show_points_in,
-                    show_conf_in,
-                    polygon_steps,
-                    allowed_ids,
-                )
-
-                # 4-2) 構建 image meta（檔名、寬高）
+                # 4-2) 構建 image meta（檔名、寬高）——先建 meta，gallery 命名與標題會用到
                 first_result = next(iter(results_cache.values()), [None])[0]
                 width = height = 0
                 try:
@@ -669,6 +682,20 @@ def app():
                     "width": int(width),
                     "height": int(height),
                 }
+
+                gallery = render_gallery_from_results(
+                    results_cache,
+                    label_mode_in,
+                    show_boxes_in,
+                    show_masks_in,
+                    show_polygons_in,
+                    show_points_in,
+                    show_conf_in,
+                    polygon_steps,
+                    allowed_ids,
+                    image_meta=image_meta,
+                    config_name=config_name_in,
+                )
 
                 return {
                     **common_updates,
@@ -753,6 +780,7 @@ def app():
                 saved_models_state,
                 class_selector,
                 class_choices_state,
+                config_name_state,
             ],
             outputs=[
                 output_gallery,
@@ -1153,6 +1181,8 @@ def app():
             polygon_opt_steps_in,
             input_type_in,
             class_selected_items_in,
+            image_meta_in=None,
+            config_name_in=None,
         ):
             if input_type_in != "Image" or not last_results_dict:
                 return gr.update()
@@ -1170,6 +1200,8 @@ def app():
                 show_conf_in,
                 polygon_steps,
                 allowed_ids,
+                image_meta=image_meta_in,
+                config_name=config_name_in,
             )
 
         def apply_polygon_replot_clicked(
@@ -1184,6 +1216,8 @@ def app():
             polygon_opt_steps_in,
             input_type_in,
             class_selected_items_in,
+            image_meta_in=None,
+            config_name_in=None,
         ):
             if not polygon_opt_enable_in:
                 gr.Warning("尚未啟用 Polygon 優化：請先勾選「啟用 Polygon 優化」。目前以原始 polygon 重繪。")
@@ -1199,6 +1233,8 @@ def app():
                 polygon_opt_steps_in,
                 input_type_in,
                 class_selected_items_in,
+                image_meta_in,
+                config_name_in,
             )
 
         # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪；
@@ -1215,6 +1251,8 @@ def app():
             polygon_opt_steps,
             input_type,
             selected_classes_global,
+            image_meta_state,
+            config_name_state,
         ]
         for register in (
             label_mode.change,
@@ -1235,23 +1273,11 @@ def app():
             inputs=_replot_inputs,
             outputs=[output_gallery],
         )
- 
+
         # Global Selection Change -> Replot
         selected_classes_global.change(
              fn=replot_all_filtered,
-             inputs=[
-                last_results,
-                label_mode,
-                show_boxes,
-                show_masks,
-                show_polygons,
-                show_points,
-                show_confidence,
-                polygon_opt_enable,
-                polygon_opt_steps,
-                input_type,
-                selected_classes_global, # Use Global State
-             ],
+             inputs=_replot_inputs,
              outputs=[output_gallery],
         )
 
@@ -1269,6 +1295,8 @@ def app():
             polygon_opt_steps_in,
             input_type_in,
             class_selected_items_in,
+            image_meta_in=None,
+            config_name_in=None,
         ):
             if not raw_results_dict:
                 return None, gr.update()
@@ -1291,6 +1319,8 @@ def app():
                 polygon_opt_steps_in,
                 input_type_in,
                 class_selected_items_in,
+                image_meta_in,
+                config_name_in,
             )
             return updated_results, gallery
 
@@ -1308,6 +1338,8 @@ def app():
             polygon_opt_steps_in,
             input_type_in,
             class_selected_items_in,
+            image_meta_in=None,
+            config_name_in=None,
         ):
             if not mask_opt_enable_in:
                 gr.Warning("尚未啟用 Mask 優化：請先勾選「啟用 Mask 優化」。目前顯示未優化結果。")
@@ -1325,6 +1357,8 @@ def app():
                 polygon_opt_steps_in,
                 input_type_in,
                 class_selected_items_in,
+                image_meta_in,
+                config_name_in,
             )
 
         # 啟用開關只回應手動切換（.input，即時重算）；
@@ -1343,6 +1377,8 @@ def app():
             polygon_opt_steps,
             input_type,
             selected_classes_global,
+            image_meta_state,
+            config_name_state,
         ]
         mask_opt_enable.input(
             fn=update_mask_processing,
@@ -1443,10 +1479,13 @@ def app():
                     "steps": polygon_opt_steps_in.values.tolist() if hasattr(polygon_opt_steps_in, "values") else list(polygon_opt_steps_in) if polygon_opt_steps_in is not None else [],
                 }
             }
-            f = tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w", encoding="utf-8")
-            json.dump(config, f, ensure_ascii=False, indent=2)
-            f.close()
-            return f.name
+            # 以日期時間命名，避免 NamedTemporaryFile 的亂碼檔名
+            config_stem = f"config_{datetime.datetime.now():%Y%m%d_%H%M%S}"
+            out_dir = tempfile.mkdtemp(prefix="yolo_config_")
+            out_path = os.path.join(out_dir, f"{config_stem}.json")
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            return out_path, config_stem
 
         export_config_btn.click(
             fn=export_ui_config,
@@ -1456,18 +1495,18 @@ def app():
                 mask_opt_enable, mask_opt_steps,
                 polygon_opt_enable, polygon_opt_steps
             ],
-            outputs=[export_config_file]
+            outputs=[export_config_file, config_name_state]
         )
 
         def import_ui_config(file_path, current_class_choices):
             if not file_path:
-                return (gr.update(),)*11 + (gr.update(), gr.update(), gr.update())
-            
+                return (gr.update(),) * 15
+
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
             except Exception:
-                return (gr.update(),)*11 + (gr.update(), gr.update(), gr.update())
+                return (gr.update(),) * 15
                 
             display = config.get("display", {})
             label_mode_v = display.get("label_mode", "顯示 class name")
@@ -1490,6 +1529,9 @@ def app():
             valid_set = set(current_class_choices or [])
             filtered_ui_classes = [c for c in classes_v if c in valid_set]
 
+            # 記錄配置名稱（檔名去副檔名），供下載推論圖檔命名
+            config_stem = os.path.splitext(os.path.basename(str(file_path)))[0]
+
             return (
                 gr.update(value=label_mode_v),
                 gr.update(value=show_boxes_v),
@@ -1505,6 +1547,7 @@ def app():
                 gr.update(value=polygon_opt_st),
                 classes_v,
                 classes_v,
+                config_stem,
             )
 
         import_config_file.upload(
@@ -1515,7 +1558,8 @@ def app():
                 selected_classes_global, class_selector,
                 mask_opt_enable, mask_opt_steps,
                 polygon_opt_enable, polygon_opt_steps,
-                step_selected_classes_global, polygon_step_selected_classes_global
+                step_selected_classes_global, polygon_step_selected_classes_global,
+                config_name_state,
             ]
         )
 
@@ -1523,7 +1567,6 @@ def app():
 
 
 def run_cli(args):
-    import cv2
     from app_utils.inference_optimizations import apply_mask_optimizations_to_result, parse_mask_steps
 
     # === 1. 定義所有參數的預設值 ===
