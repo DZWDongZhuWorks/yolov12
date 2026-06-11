@@ -441,6 +441,57 @@ def _ring_to_lane_line(ring: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.
     return _extract_centerline_delaunay(ring, eps_coeff)
 
 
+def _nearest_point_on_ring(p: np.ndarray, ring: np.ndarray) -> np.ndarray:
+    """點到閉合折線的最近點（逐線段投影）。"""
+    best = ring[0]
+    best_d = float("inf")
+    for i in range(ring.shape[0] - 1):
+        a = ring[i]
+        b = ring[i + 1]
+        ab = b - a
+        denom = float(ab @ ab)
+        t = 0.0 if denom <= 1e-12 else max(0.0, min(1.0, float((p - a) @ ab) / denom))
+        q = a + t * ab
+        d = float(np.sum((p - q) ** 2))
+        if d < best_d:
+            best_d = d
+            best = q
+    return best
+
+
+def _annulus_centerline(outer: np.ndarray, hole: np.ndarray, eps_coeff: float = 1.0) -> Optional[np.ndarray]:
+    """甜甜圈（外環 + 單一洞）-> 閉合環形中心線。
+
+    作法：對內環等距取樣，每個樣本點找外環最近點，取中點串成閉合折線。
+    比 Delaunay 中軸法穩定：無三角化、無圖搜尋。eps_coeff 越大取樣越疏（線越簡化）。
+    """
+    if outer.ndim != 2 or outer.shape[0] < 4 or hole.ndim != 2 or hole.shape[0] < 4:
+        return None
+
+    def _close(r: np.ndarray) -> np.ndarray:
+        return r if np.allclose(r[0], r[-1]) else np.vstack([r, r[0]])
+
+    outer_closed = _close(outer[:, :2].astype(np.float32))
+    hole_closed = _close(hole[:, :2].astype(np.float32))
+
+    hole_len = float(np.linalg.norm(np.diff(hole_closed, axis=0), axis=1).sum())
+    if hole_len <= 1e-6:
+        return None
+
+    step = 15.0 * max(0.1, float(eps_coeff))
+    n_samples = int(np.clip(hole_len / step, 12, 500))
+    samples = _resample_polyline(hole_closed, n_samples)
+    if samples is None or samples.shape[0] < 4:
+        return None
+    samples = samples[:-1]
+
+    mids = np.asarray(
+        [(p + _nearest_point_on_ring(p, outer_closed)) / 2.0 for p in samples],
+        dtype=np.float32,
+    )
+    return np.vstack([mids, mids[:1]])  # 閉合環形中心線（首尾相同）
+
+
 def _is_closed_ring(seg: np.ndarray) -> bool:
     return bool(seg.ndim == 2 and seg.shape[0] >= 4 and np.allclose(seg[0], seg[-1]))
 
@@ -640,18 +691,25 @@ def _apply_object_lane_line(objects: List[Dict[str, Any]], step: Optional[Dict[s
             if not polys:
                 continue
 
+            poly_holes_aligned = _aligned_holes(obj, len(polys))
             eps_coeff = float(step.get("eps_coeff", 1.0))
             extracted_lines: List[np.ndarray] = []
             all_points: List[List[float]] = []
 
-            for poly in polys:
+            for poly, poly_holes in zip(polys, poly_holes_aligned):
                 arr = np.asarray(poly, dtype=np.float32)
                 if arr.ndim != 2 or arr.shape[0] < 2:
                     continue
 
                 is_closed = _is_closed_ring(arr)
                 if is_closed:
-                    ring_line = _ring_to_lane_line(arr, eps_coeff=eps_coeff)
+                    ring_line = None
+                    if len(poly_holes) == 1:
+                        # 甜甜圈（外環 + 單一洞）→ 中點配對法產生閉合環形中心線
+                        hole_arr = np.asarray(poly_holes[0], dtype=np.float32)
+                        ring_line = _annulus_centerline(arr, hole_arr, eps_coeff=eps_coeff)
+                    if ring_line is None:
+                        ring_line = _ring_to_lane_line(arr, eps_coeff=eps_coeff)
                     if ring_line is not None and ring_line.shape[0] >= 2:
                         extracted_lines.append(ring_line)
                     arr = arr[:-1]
@@ -668,27 +726,45 @@ def _apply_object_lane_line(objects: List[Dict[str, Any]], step: Optional[Dict[s
                 continue
 
             obj["polygons"] = [ln.astype(float).tolist() for ln in extracted_lines]
+            obj["holes"] = [[] for _ in extracted_lines]
+            # 標記給 _sync_line_string_payloads：閉合的環形中心線應視為 LineString 而非面
+            obj["_lane_line_applied"] = True
 
 
 def _sync_line_string_payloads(objects: List[Dict[str, Any]]):
     for obj in objects:
+        polys = obj.get("polygons", [])
+        holes = _aligned_holes(obj, len(polys))
+        lane_applied = bool(obj.pop("_lane_line_applied", False))
+
         normalized_polys: List[List[List[float]]] = []
+        normalized_holes: List[List[List[List[float]]]] = []
         line_strings: List[Dict[str, Any]] = []
 
-        for poly in obj.get("polygons", []):
+        for poly, poly_holes in zip(polys, holes):
             arr = np.asarray(poly, dtype=np.float32)
             if arr.ndim != 2 or arr.shape[0] < 2:
                 continue
 
             if _is_closed_ring(arr):
                 coords = _close_ring(_strip_closing_point(arr).astype(float).tolist())
+                if lane_applied:
+                    # 環形 lane line：閉合 LineString（首尾相同），語義是線不是面
+                    line_strings.append({"type": "LineString", "coordinates": coords})
             else:
                 coords = arr.astype(float).tolist()
                 line_strings.append({"type": "LineString", "coordinates": coords})
 
             normalized_polys.append(coords)
+            group_holes: List[List[List[float]]] = []
+            for hole in poly_holes:
+                hole_arr = np.asarray(hole, dtype=np.float32)
+                if hole_arr.ndim == 2 and hole_arr.shape[0] >= 3:
+                    group_holes.append(_close_ring(_strip_closing_point(hole_arr).astype(float).tolist()))
+            normalized_holes.append(group_holes)
 
         obj["polygons"] = normalized_polys
+        obj["holes"] = normalized_holes
         if line_strings:
             obj["line_strings"] = line_strings
         else:
@@ -704,16 +780,36 @@ def _apply_ordered_polygon_steps(objects: List[Dict[str, Any]], steps: Optional[
         _t_step = time.perf_counter()
         name = str(step.get("name", "")).strip().lower()
         if name in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "small_object_fit"}:
+            # 洞語義：點數簡化（rdp/visvalingam）同步套用到洞；
+            # export_line 轉成線後洞失去意義 → 丟棄；其餘形狀替換步驟保留洞不動
+            simplifies_holes = name in {"rdp", "visvalingam_whyatt"}
+            drops_holes = name == "export_line"
             for obj in objects:
                 cid = int(obj.get("class_id", -1))
+                polys = obj.get("polygons", [])
+                holes = _aligned_holes(obj, len(polys))
                 updated_polys: List[List[List[float]]] = []
-                for poly in obj.get("polygons", []):
+                updated_holes: List[List[List[List[float]]]] = []
+                for poly, poly_holes in zip(polys, holes):
                     arr = np.asarray(poly, dtype=np.float32)
                     if arr.ndim != 2 or arr.shape[0] < 2:
                         continue
                     updated = _apply_polygon_steps(arr, [step], cid)
                     updated_polys.append(updated.astype(float).tolist())
+                    if drops_holes:
+                        updated_holes.append([])
+                    elif simplifies_holes and poly_holes:
+                        new_holes: List[List[List[float]]] = []
+                        for hole in poly_holes:
+                            hole_arr = np.asarray(hole, dtype=np.float32)
+                            if hole_arr.ndim != 2 or hole_arr.shape[0] < 2:
+                                continue
+                            new_holes.append(_apply_polygon_steps(hole_arr, [step], cid).astype(float).tolist())
+                        updated_holes.append(new_holes)
+                    else:
+                        updated_holes.append(list(poly_holes))
                 obj["polygons"] = updated_polys
+                obj["holes"] = updated_holes
         elif name == "polygon_to_lane_line":
             _apply_object_lane_line(objects, step)
         elif name == "pca":
@@ -913,6 +1009,54 @@ def _close_ring(points: List[List[float]]) -> List[List[float]]:
     return points + [first]
 
 
+# 小於此面積（px²）的洞視為遮罩雜訊，直接忽略
+MIN_HOLE_AREA_PX = 4.0
+
+
+def _mask_to_ring_groups(binary_mask: np.ndarray) -> List[Tuple[np.ndarray, List[np.ndarray]]]:
+    """二值遮罩 -> [(外環, [洞環...]), ...]（遮罩座標，未縮放）。
+
+    取代 ultralytics masks2segments 的 RETR_EXTERNAL：
+    - RETR_CCOMP 保留兩層階層（外環 + 洞），解決甜甜圈空洞遺失問題
+    - 多個獨立外環各自成組，不再被 merge_multi_segment 橋接成單一折線
+    """
+    contours, hierarchy = cv2.findContours(binary_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours or hierarchy is None:
+        return []
+    hierarchy = hierarchy[0]  # (n, 4): [next, prev, first_child, parent]
+
+    groups: List[Tuple[np.ndarray, List[np.ndarray]]] = []
+    contour_to_group: Dict[int, int] = {}
+    for i, contour in enumerate(contours):
+        if hierarchy[i][3] != -1:
+            continue  # 洞，第二輪處理
+        ring = contour.reshape(-1, 2).astype(np.float32)
+        if ring.shape[0] < 3:
+            continue
+        contour_to_group[i] = len(groups)
+        groups.append((ring, []))
+
+    for i, contour in enumerate(contours):
+        parent = int(hierarchy[i][3])
+        if parent == -1 or parent not in contour_to_group:
+            continue
+        hole = contour.reshape(-1, 2).astype(np.float32)
+        if hole.shape[0] < 3 or cv2.contourArea(hole) < MIN_HOLE_AREA_PX:
+            continue
+        groups[contour_to_group[parent]][1].append(hole)
+
+    return groups
+
+
+def _aligned_holes(obj: Dict[str, Any], n: int) -> List[List[Any]]:
+    """取出與 polygons 索引對齊的 holes（缺漏補空清單）。"""
+    holes = obj.get("holes") or []
+    out = [list(h) if h else [] for h in holes[:n]]
+    while len(out) < n:
+        out.append([])
+    return out
+
+
 def build_objects_from_result(
     result,
     allowed_class_ids: Optional[List[int]] = None,
@@ -968,7 +1112,10 @@ def build_objects_from_result(
         conf_arr = None
 
     has_masks = getattr(result, "masks", None) is not None
-    raw_polys = getattr(result.masks, "xy", None) if has_masks else None
+    masks_data = getattr(result.masks, "data", None) if has_masks else None
+    mask_shape = tuple(masks_data.shape[1:]) if masks_data is not None else None
+    if masks_data is not None:
+        from ultralytics.utils import ops as _ultra_ops  # 延遲載入，避免單純使用本模組時引入 ultralytics
 
     objects: List[Dict[str, Any]] = []
 
@@ -981,26 +1128,29 @@ def build_objects_from_result(
         class_name = names.get(cid, str(cid))
         conf = float(conf_arr[i]) if conf_arr is not None and i < len(conf_arr) else None
 
-        # --- 產生 polygons ---
+        # --- 產生 polygons（外環）與 holes（洞，索引與 polygons 對齊） ---
         polys: List[List[List[float]]] = []
+        holes: List[List[List[List[float]]]] = []
 
-        if has_masks and raw_polys is not None and i < len(raw_polys):
-            item = raw_polys[i]
+        if masks_data is not None and i < len(masks_data):
+            m = masks_data[i]
+            m = m.cpu().numpy() if hasattr(m, "cpu") else np.asarray(m)
+            binary = (m > 0.5).astype(np.uint8)
 
-            # YOLO 可能是 ndarray 或 list[ndarray]
-            segments = item if isinstance(item, list) else [item]
-
-            for seg in segments:
-                if seg is None:
+            for ext_ring, hole_rings in _mask_to_ring_groups(binary):
+                ext = _ultra_ops.scale_coords(mask_shape, ext_ring, result.orig_shape, normalize=False)
+                ext = _simplify_segment(ext, simplify_mode, simplify_eps_coeff)
+                if ext.shape[0] < 3:
                     continue
-                arr = np.asarray(seg, dtype=np.float32)
-                if arr.ndim == 1:
-                    arr = arr.reshape(-1, 2)
-                if arr.shape[0] < 3:
-                    continue
+                polys.append(_close_ring(ext.astype(float).tolist()))
 
-                arr = _simplify_segment(arr, simplify_mode, simplify_eps_coeff)
-                polys.append(_close_ring(arr.astype(float).tolist()))
+                group_holes: List[List[List[float]]] = []
+                for hole_ring in hole_rings:
+                    hole = _ultra_ops.scale_coords(mask_shape, hole_ring, result.orig_shape, normalize=False)
+                    hole = _simplify_segment(hole, simplify_mode, simplify_eps_coeff)
+                    if hole.shape[0] >= 3:
+                        group_holes.append(_close_ring(hole.astype(float).tolist()))
+                holes.append(group_holes)
         else:
             # 沒有 mask：用 bbox 當成一個矩形 polygon
             polys.append(
@@ -1013,6 +1163,7 @@ def build_objects_from_result(
                     ]
                 )
             )
+            holes.append([])
 
         objects.append(
             {
@@ -1021,6 +1172,7 @@ def build_objects_from_result(
                 "confidence": conf,
                 "bbox_xyxy": [x1, y1, x2, y2],
                 "polygons": polys,
+                "holes": holes,
             }
         )
 

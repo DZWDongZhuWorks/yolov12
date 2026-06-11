@@ -177,65 +177,96 @@ def convert_yolo_json_to_geojson(
         confidence = o.get("confidence")
         bbox_pixel = o.get("bbox_xyxy")  # [x1, y1, x2, y2]
         polygons = o.get("polygons", []) # List[List[[x,y]...]]
+        holes_aligned = o.get("holes") or []        # 與 polygons 索引對齊的洞清單（新版欄位，可缺漏）
+        line_strings = o.get("line_strings") or []  # lane line 步驟輸出（閉合座標 = 環形線，非面）
 
         # --- 1. 處理幾何 (Polygon/LineString) ---
-        geometry_type: Optional[str] = None
-        converted_shapes: List[List[List[float]]] = []
-
-        # 遍歷輸入的每一個點序列 (可能是一個多邊形的外環，或是一條線)
-        for poly_ring in polygons:
-            
-            # 檢查原始像素座標是否閉合 (首尾點是否相同)
-            is_input_closed = (len(poly_ring) > 2 and poly_ring[0] == poly_ring[-1])
-            
-            # 轉換座標 (先轉換，不論是否閉合)
-            transformed_ring = _convert_coord_list(
-                poly_ring, wf, transformer, crop_x, crop_y
-            )
-            
-            # --- 決定類型與 GeoJSON 閉合修正 ---
-            current_type = None
-            if is_input_closed:
-                # 判斷為 Polygon。強制 GeoJSON 閉合規範。
-                current_type = "Polygon"
-                if transformed_ring and transformed_ring[0] != transformed_ring[-1]:
-                    transformed_ring.append(transformed_ring[0])
-                    
-            elif len(transformed_ring) >= 2:
-                # 判斷為 LineString (開放狀態，且至少兩個點)
-                current_type = "LineString"
-            else:
-                continue # 點數不足，跳過
-
-            # --- 類型一致性檢查 ---
-            if geometry_type is None:
-                geometry_type = current_type # 設定第一個檢測到的類型
-            elif geometry_type != current_type:
-                # 如果一個 Feature 內包含混合類型 (LineString 和 Polygon)，這是無效的 GeoJSON Feature，跳過此幾何
-                print(f"Warning: Object {idx} contains mixed Polygon/LineString geometries. Skipping geometry conversion.")
-                geometry_type = None
-                break
-                
-            converted_shapes.append(transformed_ring)
-        
-        # --- 最終組裝 Geometry ---
         geometry = None
-        if converted_shapes:
-            if geometry_type == "Polygon":
-                if len(converted_shapes) == 1:
-                    # 單一 Polygon: GeoJSON 座標結構: [[外環], [內環1], ...]
-                    geometry = {"type": "Polygon", "coordinates": converted_shapes}
+
+        # 1-a. line_strings 優先：物件經 polygon_to_lane_line 轉換後，
+        #      閉合座標（首尾相同）代表「環形 lane line」，須輸出 LineString 而非 Polygon
+        if line_strings:
+            converted_lines: List[List[List[float]]] = []
+            for ls in line_strings:
+                coords = ls.get("coordinates") if isinstance(ls, dict) else ls
+                if not coords or len(coords) < 2:
+                    continue
+                converted_lines.append(_convert_coord_list(coords, wf, transformer, crop_x, crop_y))
+            if len(converted_lines) == 1:
+                geometry = {"type": "LineString", "coordinates": converted_lines[0]}
+            elif converted_lines:
+                geometry = {"type": "MultiLineString", "coordinates": converted_lines}
+
+        # 1-b. 一般路徑：遍歷每個點序列（多邊形外環或線）
+        geometry_type: Optional[str] = None
+        converted_shapes: List[Any] = []
+
+        if geometry is None:
+            for ring_idx, poly_ring in enumerate(polygons):
+
+                # 檢查原始像素座標是否閉合 (首尾點是否相同)
+                is_input_closed = (len(poly_ring) > 2 and poly_ring[0] == poly_ring[-1])
+
+                # 轉換座標 (先轉換，不論是否閉合)
+                transformed_ring = _convert_coord_list(
+                    poly_ring, wf, transformer, crop_x, crop_y
+                )
+
+                # --- 決定類型與 GeoJSON 閉合修正 ---
+                current_type = None
+                shape: Any = None
+                if is_input_closed:
+                    # 判斷為 Polygon。強制 GeoJSON 閉合規範。
+                    current_type = "Polygon"
+                    if transformed_ring and transformed_ring[0] != transformed_ring[-1]:
+                        transformed_ring.append(transformed_ring[0])
+                    # 帶洞 Polygon：GeoJSON ring 順序 = [外環, 洞1, 洞2, ...]
+                    ring_group = [transformed_ring]
+                    obj_holes = holes_aligned[ring_idx] if ring_idx < len(holes_aligned) else []
+                    for hole in (obj_holes or []):
+                        if not hole or len(hole) <= 2:
+                            continue
+                        transformed_hole = _convert_coord_list(hole, wf, transformer, crop_x, crop_y)
+                        if transformed_hole and transformed_hole[0] != transformed_hole[-1]:
+                            transformed_hole.append(transformed_hole[0])
+                        ring_group.append(transformed_hole)
+                    shape = ring_group
+
+                elif len(transformed_ring) >= 2:
+                    # 判斷為 LineString (開放狀態，且至少兩個點)
+                    current_type = "LineString"
+                    shape = transformed_ring
                 else:
-                    # MultiPolygon: GeoJSON 座標結構: [[[環1]], [[環2]], ...]
-                    geometry = {"type": "MultiPolygon", "coordinates": [[ring] for ring in converted_shapes]}
-            
-            elif geometry_type == "LineString":
-                if len(converted_shapes) == 1:
-                    # 單一 LineString: GeoJSON 座標結構: [點1, 點2, ...]
-                    geometry = {"type": "LineString", "coordinates": converted_shapes[0]}
-                else:
-                    # MultiLineString: GeoJSON 座標結構: [[線1點], [線2點], ...]
-                    geometry = {"type": "MultiLineString", "coordinates": converted_shapes}
+                    continue # 點數不足，跳過
+
+                # --- 類型一致性檢查 ---
+                if geometry_type is None:
+                    geometry_type = current_type # 設定第一個檢測到的類型
+                elif geometry_type != current_type:
+                    # 如果一個 Feature 內包含混合類型 (LineString 和 Polygon)，這是無效的 GeoJSON Feature，跳過此幾何
+                    print(f"Warning: Object {idx} contains mixed Polygon/LineString geometries. Skipping geometry conversion.")
+                    geometry_type = None
+                    break
+
+                converted_shapes.append(shape)
+
+            # --- 最終組裝 Geometry ---
+            if converted_shapes:
+                if geometry_type == "Polygon":
+                    if len(converted_shapes) == 1:
+                        # 單一 Polygon: GeoJSON 座標結構: [[外環], [洞1], ...]
+                        geometry = {"type": "Polygon", "coordinates": converted_shapes[0]}
+                    else:
+                        # MultiPolygon: GeoJSON 座標結構: [[[外環, 洞...]], ...]（每組已是 ring list）
+                        geometry = {"type": "MultiPolygon", "coordinates": converted_shapes}
+
+                elif geometry_type == "LineString":
+                    if len(converted_shapes) == 1:
+                        # 單一 LineString: GeoJSON 座標結構: [點1, 點2, ...]
+                        geometry = {"type": "LineString", "coordinates": converted_shapes[0]}
+                    else:
+                        # MultiLineString: GeoJSON 座標結構: [[線1點], [線2點], ...]
+                        geometry = {"type": "MultiLineString", "coordinates": converted_shapes}
 
         # --- 2. 處理 BBox (轉為經緯度) ---
         bbox_lonlat = None

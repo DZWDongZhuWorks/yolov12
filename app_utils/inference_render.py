@@ -69,7 +69,9 @@ def annotate_from_results(
         for obj in objects:
             cid = obj["class_id"]
             color = tuple(int(v) for v in ucolors(cid, bgr=True))
-            for seg in obj["polygons"]:
+            # 洞（內環）邊界與外環同色一併繪製
+            hole_rings = [h for group in (obj.get("holes") or []) for h in group]
+            for seg in list(obj["polygons"]) + hole_rings:
                 seg_arr = np.asarray(seg, dtype=np.float32)
                 if seg_arr.ndim != 2 or seg_arr.shape[0] < 2:
                     continue
