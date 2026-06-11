@@ -781,11 +781,15 @@ def _apply_ordered_polygon_steps(objects: List[Dict[str, Any]], steps: Optional[
         name = str(step.get("name", "")).strip().lower()
         if name in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "small_object_fit"}:
             # 洞語義：點數簡化（rdp/visvalingam）同步套用到洞；
-            # export_line 轉成線後洞失去意義 → 丟棄；其餘形狀替換步驟保留洞不動
+            # export_line 轉成線後洞失去意義 → 丟棄；其餘形狀替換步驟保留洞不動。
+            # 注意：洞的處理必須跟 _apply_polygon_steps 一樣尊重類別篩選，
+            # 否則 export_line 只作用於部分類別時，其他類別（如甜甜圈）的洞會被誤刪
             simplifies_holes = name in {"rdp", "visvalingam_whyatt"}
             drops_holes = name == "export_line"
+            step_class_filter = step.get("class_filter")
             for obj in objects:
                 cid = int(obj.get("class_id", -1))
+                step_applies = step_class_filter is None or cid in step_class_filter
                 polys = obj.get("polygons", [])
                 holes = _aligned_holes(obj, len(polys))
                 updated_polys: List[List[List[float]]] = []
@@ -796,9 +800,9 @@ def _apply_ordered_polygon_steps(objects: List[Dict[str, Any]], steps: Optional[
                         continue
                     updated = _apply_polygon_steps(arr, [step], cid)
                     updated_polys.append(updated.astype(float).tolist())
-                    if drops_holes:
+                    if drops_holes and step_applies:
                         updated_holes.append([])
-                    elif simplifies_holes and poly_holes:
+                    elif simplifies_holes and step_applies and poly_holes:
                         new_holes: List[List[List[float]]] = []
                         for hole in poly_holes:
                             hole_arr = np.asarray(hole, dtype=np.float32)

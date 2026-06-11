@@ -105,7 +105,9 @@ def app():
                 with gr.Tabs():
                     with gr.Tab("輸入 / 模型"):
                         # 影像 / 影片輸入
-                        image = gr.Image(type="pil", label="Image", visible=True)
+                        # type="filepath"：保留原始上傳檔名（type="pil" 會在前處理後遺失 filename，
+                        # ultralytics 對記憶體影像一律命名 image0）
+                        image = gr.Image(type="filepath", label="Image", visible=True)
                         video = gr.Video(label="Video", visible=False)
                         input_type = gr.Radio(
                             choices=["Image", "Video"],
@@ -147,10 +149,10 @@ def app():
                         )
 
                     with gr.Tab("顯示 / 執行"):
-                        label_mode = gr.Radio(
-                            choices=["隱藏", "顯示 class id", "顯示 class name"],
-                            value="顯示 class name",
-                            label="標籤模式",
+                        label_mode = gr.CheckboxGroup(
+                            choices=["顯示 class id", "顯示 class name"],
+                            value=["顯示 class name"],
+                            label="標籤顯示（可複選；全部取消 = 隱藏）",
                         )
                         show_boxes = gr.Checkbox(value=True, label="顯示 bbox 外框")
                         show_masks = gr.Checkbox(value=True, label="顯示 segmentation 遮罩")
@@ -663,12 +665,16 @@ def app():
                     width = height = 0
 
                 fname = None
-                # 優先從 PIL 物件上抓 filename/name/path
-                for attr in ("filename", "name", "path"):
-                    candidate = getattr(image_in, attr, None)
-                    if candidate:
-                        fname = os.path.basename(str(candidate))
-                        break
+                # filepath 輸入：直接取檔名
+                if isinstance(image_in, str):
+                    fname = os.path.basename(image_in)
+                # PIL 後備：從物件上抓 filename/name/path
+                if not fname:
+                    for attr in ("filename", "name", "path"):
+                        candidate = getattr(image_in, attr, None)
+                        if candidate:
+                            fname = os.path.basename(str(candidate))
+                            break
                 # 再退而求其次從 result.path
                 if not fname and first_result is not None:
                     rp = getattr(first_result, "path", None)
@@ -1509,7 +1515,10 @@ def app():
                 return (gr.update(),) * 15
                 
             display = config.get("display", {})
-            label_mode_v = display.get("label_mode", "顯示 class name")
+            label_mode_v = display.get("label_mode", ["顯示 class name"])
+            # 舊版 config 為單選字串 → 轉為複選清單
+            if isinstance(label_mode_v, str):
+                label_mode_v = [] if label_mode_v == "隱藏" else [label_mode_v]
             show_boxes_v = display.get("show_boxes", True)
             show_masks_v = display.get("show_masks", True)
             show_polygons_v = display.get("show_polygons", True)
@@ -1623,7 +1632,7 @@ def run_cli(args):
     input_path = args.input
     if os.path.isdir(input_path):
         image_files = []
-        for ext in ('*.jpg', '*.jpeg', '*.png', '*.bmp'):
+        for ext in ('*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tif', '*.tiff'):
             image_files.extend(glob.glob(os.path.join(input_path, ext)))
             image_files.extend(glob.glob(os.path.join(input_path, ext.upper())))
         # Windows case-insensitive deduplication

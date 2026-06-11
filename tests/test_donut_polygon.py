@@ -181,6 +181,38 @@ def test_export_line_step_drops_holes():
     assert obj["holes"] == [[] for _ in obj["polygons"]]
 
 
+def test_class_filtered_export_line_keeps_other_class_holes():
+    """回歸：export_line 只作用於其他類別時，甜甜圈（不在篩選內）的洞不得被誤刪，
+    後續 polygon_to_lane_line 仍須輸出閉合環形中心線。"""
+    steps = [
+        # 甜甜圈是 class 0（"ring"），export_line 篩選到不存在的 class 99
+        {"name": "export_line", "count": 1, "eps_coeff": 1.0, "min_aspect": 0.0, "classes": [99]},
+        {"name": "polygon_to_lane_line", "count": 1, "eps_coeff": 1.0, "classes": None},
+    ]
+    objects = polygon_utils.build_objects_from_result(
+        _Result(_donut_mask()), polygon_opt_steps=steps
+    )
+
+    obj = objects[0]
+    line = np.asarray(obj["polygons"][0], dtype=np.float32)
+    assert np.allclose(line[0], line[-1]), "洞被誤刪會退回開放的 medial axis 線"
+    radii = _radius(line[:-1])
+    assert abs(float(radii.mean()) - 60.0) < 3.0
+
+
+def test_class_filtered_export_line_keeps_holes_without_lane_step():
+    """export_line 篩選不符的物件，holes 欄位必須原樣保留。"""
+    objects = polygon_utils.build_objects_from_result(
+        _Result(_donut_mask()),
+        polygon_opt_steps=[{"name": "export_line", "count": 1, "eps_coeff": 1.0,
+                            "min_aspect": 0.0, "classes": [99]}],
+    )
+    obj = objects[0]
+    assert len(obj["holes"][0]) == 1
+    hole_r = _radius(obj["holes"][0][0])
+    assert 35 <= hole_r.mean() <= 45
+
+
 # ---------------------------------------------------------------------------
 # 5. GeoJSON 轉換
 # ---------------------------------------------------------------------------
