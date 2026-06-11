@@ -76,7 +76,7 @@ APP_CSS = """
 .mask-steps-table textarea,
 .polygon-steps-table textarea,
 .mask-steps-table td:nth-child(10) > div,
-.polygon-steps-table td:nth-child(8) > div {
+.polygon-steps-table td:nth-child(10) > div {
     max-height: 80px;
     overflow: auto !important;
     white-space: pre-wrap;
@@ -84,10 +84,10 @@ APP_CSS = """
 
 .mask-steps-table th:nth-child(10),
 .mask-steps-table td:nth-child(10),
-.polygon-steps-table th:nth-child(8),
-.polygon-steps-table td:nth-child(8) {
-    min-width: 320px !important;
-    width: 320px !important;
+.polygon-steps-table th:nth-child(10),
+.polygon-steps-table td:nth-child(10) {
+    min-width: 220px !important;
+    width: 220px !important;
 }
 """
 
@@ -179,95 +179,105 @@ def app():
                                 interactive=True,
                             )
                         with gr.Row():
-                            select_all_btn = gr.Button(value="選擇全選", variant="secondary")
-                            clear_all_btn = gr.Button(value="取消全選", variant="secondary")
+                            select_all_btn = gr.Button(value="全部選取", variant="secondary")
+                            clear_all_btn = gr.Button(value="全部取消", variant="secondary")
 
                     with gr.Tab("Mask 優化"):
                         gr.Markdown("### Mask 優化")
-                        mask_opt_enable = gr.Checkbox(value=False, label="啟用 Mask 優化")
-                        with gr.Row():
-                            mask_opt_method = gr.Dropdown(
-                                label="新增步驟",
-                                choices=[
-                                    "erode",
-                                    "dilate",
-                                    "distance_erode",
-                                    "distance_dilate",
-                                    "split",
-                                    "merge",
-                                    "blur",
-                                    "remove_small",
-                                    "fill_holes",
-                                ],
-                                value="erode",
-                            )
-                            mask_opt_count = gr.Slider(
-                                label="次數",
-                                minimum=1,
-                                maximum=10,
-                                step=1,
-                                value=1,
-                            )
-                            mask_opt_add = gr.Button(value="加入步驟", variant="secondary")
-                        with gr.Row():
-                            step_morph_kernel = gr.Slider(
-                                label="Morph Kernel (odd)",
-                                minimum=1,
-                                maximum=15,
-                                step=2,
-                                value=3,
-                            )
-                            step_blur_kernel = gr.Slider(
-                                label="Blur Kernel (odd)",
-                                minimum=1,
-                                maximum=15,
-                                step=2,
-                                value=3,
-                            )
-                            step_blur_threshold = gr.Slider(
-                                label="Blur Threshold",
-                                minimum=0.1,
-                                maximum=0.9,
-                                step=0.05,
-                                value=0.5,
-                            )
-                        with gr.Row():
-                            step_min_component_area = gr.Slider(
-                                label="Min Component Area",
-                                minimum=0,
-                                maximum=5000,
-                                step=10,
-                                value=0,
-                            )
-                            step_max_hole_area = gr.Slider(
-                                label="Max Hole Area",
-                                minimum=0,
-                                maximum=5000,
-                                step=10,
-                                value=0,
-                            )
-                            step_merge_iou_threshold = gr.Slider(
-                                label="Merge IoU Threshold",
-                                minimum=0.0,
-                                maximum=1.0,
-                                step=0.01,
-                                value=0.1,
-                            )
-                        step_class_filter_query = gr.Textbox(
-                            label="類別查詢",
-                            placeholder="輸入關鍵字或 class id",
+                        mask_opt_enable = gr.Checkbox(
+                            value=False,
+                            label="啟用 Mask 優化（手動切換後立即重算）",
                         )
-                        with gr.Accordion("Mask 套用 Classes", open=False):
-                            step_class_filter = gr.CheckboxGroup(
-                                label="Classes",
-                                choices=[],
-                                value=[],
-                            )
+                        with gr.Accordion("新增步驟", open=True):
                             with gr.Row():
-                                step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
-                                step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                                mask_opt_method = gr.Dropdown(
+                                    label="步驟方法",
+                                    choices=[
+                                        "erode",
+                                        "dilate",
+                                        "distance_erode",
+                                        "distance_dilate",
+                                        "split",
+                                        "merge",
+                                        "blur",
+                                        "remove_small",
+                                        "fill_holes",
+                                    ],
+                                    value="erode",
+                                )
+                                mask_opt_count = gr.Slider(
+                                    label="次數",
+                                    minimum=1,
+                                    maximum=10,
+                                    step=1,
+                                    value=1,
+                                )
+                            # 參數依所選方法動態顯示（預設 erode → 只顯示 Morph Kernel）
+                            with gr.Row():
+                                step_morph_kernel = gr.Slider(
+                                    label="Morph Kernel (odd)",
+                                    minimum=1,
+                                    maximum=15,
+                                    step=2,
+                                    value=3,
+                                    visible=True,
+                                )
+                                step_blur_kernel = gr.Slider(
+                                    label="Blur Kernel (odd)",
+                                    minimum=1,
+                                    maximum=15,
+                                    step=2,
+                                    value=3,
+                                    visible=False,
+                                )
+                                step_blur_threshold = gr.Slider(
+                                    label="Blur Threshold",
+                                    minimum=0.1,
+                                    maximum=0.9,
+                                    step=0.05,
+                                    value=0.5,
+                                    visible=False,
+                                )
+                                step_min_component_area = gr.Slider(
+                                    label="Min Component Area",
+                                    minimum=0,
+                                    maximum=5000,
+                                    step=10,
+                                    value=0,
+                                    visible=False,
+                                )
+                                step_max_hole_area = gr.Slider(
+                                    label="Max Hole Area",
+                                    minimum=0,
+                                    maximum=5000,
+                                    step=10,
+                                    value=0,
+                                    visible=False,
+                                )
+                                step_merge_iou_threshold = gr.Slider(
+                                    label="Merge IoU Threshold",
+                                    minimum=0.0,
+                                    maximum=1.0,
+                                    step=0.01,
+                                    value=0.1,
+                                    visible=False,
+                                )
+                            step_class_filter_query = gr.Textbox(
+                                label="類別查詢",
+                                placeholder="輸入關鍵字或 class id",
+                            )
+                            with gr.Accordion("套用類別（未選或全選 = 全部類別）", open=False):
+                                step_class_filter = gr.CheckboxGroup(
+                                    label="Classes",
+                                    choices=[],
+                                    value=[],
+                                )
+                                with gr.Row():
+                                    step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
+                                    step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                            mask_opt_add = gr.Button(value="加入步驟", variant="secondary")
                         gr.Markdown(
-                            "可直接編輯下表調整順序、次數與參數。`enabled` 可快速開關單一步驟；`classes` 欄位留空 = 全部類別。編輯完成後按「套用 Mask 優化並重繪」更新結果。"
+                            "步驟由上而下依序執行，可直接編輯表格。`enabled` 開關單一步驟；空白欄位使用預設值；`classes` 留空 = 全部類別。表格編輯後按「套用」更新結果。"
                         )
                         mask_opt_steps = gr.Dataframe(
                             headers=[
@@ -299,84 +309,96 @@ def app():
                             wrap=True,
                             label="Mask 優化流程",
                             type="array",
-                            column_widths=["120px", "90px", "90px", "120px", "120px", "130px", "150px", "130px", "160px", "420px"],
+                            column_widths=["120px", "90px", "90px", "120px", "120px", "130px", "150px", "130px", "160px", "220px"],
                             elem_classes=["mask-steps-table"],
                         )
-                        mask_opt_apply = gr.Button(value="套用 Mask 優化並重繪", variant="primary")
+                        with gr.Row():
+                            mask_opt_apply = gr.Button(value="套用 Mask 優化並重繪", variant="primary")
+                            mask_opt_clear = gr.Button(value="清空步驟", variant="secondary")
 
                     with gr.Tab("Polygon 優化"):
                         gr.Markdown("### Polygon 優化")
-                        polygon_opt_enable = gr.Checkbox(value=False, label="啟用 Polygon 優化")
-                        with gr.Row():
-                            polygon_opt_method = gr.Dropdown(
-                                label="新增步驟",
-                                choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "polygon_to_lane_line", "pca", "small_object_fit"],
-                                value="rdp",
-                            )
-                            polygon_opt_count = gr.Slider(
-                                label="次數",
-                                minimum=1,
-                                maximum=10,
-                                step=1,
-                                value=1,
-                            )
-                            polygon_opt_add = gr.Button(value="加入步驟", variant="secondary")
-                        with gr.Row():
-                            polygon_step_eps_coeff = gr.Slider(
-                                label="Step Epsilon Coefficient",
-                                minimum=0.1,
-                                maximum=5.0,
-                                step=0.1,
-                                value=1.0,
-                            )
-                            polygon_step_min_aspect = gr.Slider(
-                                label="Min Aspect (min_area_rect / export_line)",
-                                minimum=0.0,
-                                maximum=20.0,
-                                step=0.1,
-                                value=0.0,
-                            )
-                            polygon_step_pca_min_cosine = gr.Slider(
-                                label="PCA Min Cosine (方向分群門檻)",
-                                minimum=0.7,
-                                maximum=0.999,
-                                step=0.001,
-                                value=0.94,
-                            )
-                            polygon_step_pca_cross_class = gr.Checkbox(
-                                label="PCA 跨類別共同計算（限本步驟 classes 範圍）",
-                                value=False,
-                            )
-                        with gr.Row():
-                            polygon_step_max_area_px = gr.Slider(
-                                label="Max Area px² (small_object_fit；0 = 不檢查)",
-                                minimum=0.0,
-                                maximum=50000.0,
-                                step=100.0,
-                                value=5000.0,
-                            )
-                            polygon_step_target_vertices = gr.Slider(
-                                label="Target Vertices (small_object_fit)",
-                                minimum=3,
-                                maximum=32,
-                                step=1,
-                                value=8,
-                            )
-                        polygon_step_class_filter_query = gr.Textbox(
-                            label="類別查詢",
-                            placeholder="輸入關鍵字或 class id",
+                        polygon_opt_enable = gr.Checkbox(
+                            value=False,
+                            label="啟用 Polygon 優化（手動切換後立即重繪）",
                         )
-                        with gr.Accordion("Polygon 套用 Classes", open=False):
-                            polygon_step_class_filter = gr.CheckboxGroup(
-                                label="Classes",
-                                choices=[],
-                                value=[],
-                            )
+                        with gr.Accordion("新增步驟", open=True):
                             with gr.Row():
-                                polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
-                                polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                                polygon_opt_method = gr.Dropdown(
+                                    label="步驟方法",
+                                    choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "polygon_to_lane_line", "pca", "small_object_fit"],
+                                    value="rdp",
+                                )
+                                polygon_opt_count = gr.Slider(
+                                    label="次數",
+                                    minimum=1,
+                                    maximum=10,
+                                    step=1,
+                                    value=1,
+                                )
+                            # 參數依所選方法動態顯示（預設 rdp → 只顯示 Epsilon 係數）
+                            with gr.Row():
+                                polygon_step_eps_coeff = gr.Slider(
+                                    label="Epsilon 係數（簡化 / 對齊強度）",
+                                    minimum=0.1,
+                                    maximum=5.0,
+                                    step=0.1,
+                                    value=1.0,
+                                    visible=True,
+                                )
+                                polygon_step_min_aspect = gr.Slider(
+                                    label="Min Aspect（長寬比門檻）",
+                                    minimum=0.0,
+                                    maximum=20.0,
+                                    step=0.1,
+                                    value=0.0,
+                                    visible=False,
+                                )
+                                polygon_step_pca_min_cosine = gr.Slider(
+                                    label="PCA Min Cosine（方向分群門檻）",
+                                    minimum=0.7,
+                                    maximum=0.999,
+                                    step=0.001,
+                                    value=0.94,
+                                    visible=False,
+                                )
+                                polygon_step_pca_cross_class = gr.Checkbox(
+                                    label="PCA 跨類別共同計算",
+                                    value=False,
+                                    visible=False,
+                                )
+                                polygon_step_max_area_px = gr.Slider(
+                                    label="Max Area px²（0 = 不限制）",
+                                    minimum=0.0,
+                                    maximum=50000.0,
+                                    step=100.0,
+                                    value=5000.0,
+                                    visible=False,
+                                )
+                                polygon_step_target_vertices = gr.Slider(
+                                    label="Target Vertices",
+                                    minimum=3,
+                                    maximum=32,
+                                    step=1,
+                                    value=8,
+                                    visible=False,
+                                )
+                            polygon_step_class_filter_query = gr.Textbox(
+                                label="類別查詢",
+                                placeholder="輸入關鍵字或 class id",
+                            )
+                            with gr.Accordion("套用類別（未選或全選 = 全部類別）", open=False):
+                                polygon_step_class_filter = gr.CheckboxGroup(
+                                    label="Classes",
+                                    choices=[],
+                                    value=[],
+                                )
+                                with gr.Row():
+                                    polygon_step_select_all_btn = gr.Button(value="全部選取", variant="secondary")
+                                    polygon_step_clear_all_btn = gr.Button(value="全部取消", variant="secondary")
+                            polygon_opt_add = gr.Button(value="加入步驟", variant="secondary")
                         gr.Markdown(
-                            "可直接編輯下表調整 Polygon 優化順序、次數與參數。`eps_coeff` 用於 rdp/visvalingam、polygon_to_lane_line 或 pca 對齊強度；`min_aspect` 用於 min_area_rect/export_line；`pca_min_cosine` 用於方向分群門檻；`pca_cross_class` 控制是否跨類別共同計算 PCA；`max_area_px` 與 `target_vertices` 用於 small_object_fit（max_area_px=0 表示不檢查大小門檻）；`classes` 欄位留空 = 全部類別。編輯完成後按「套用 Polygon 優化並重繪」更新結果。"
+                            "步驟由上而下依序執行，可直接編輯表格。`enabled` 開關單一步驟；空白欄位使用預設值；`classes` 留空 = 全部類別。表格編輯後按「套用」更新結果。"
                         )
                         polygon_opt_steps = gr.Dataframe(
                             headers=["step", "enabled", "count", "eps_coeff", "min_aspect", "pca_min_cosine", "pca_cross_class", "max_area_px", "target_vertices", "classes"],
@@ -386,10 +408,12 @@ def app():
                             wrap=True,
                             label="Polygon 優化流程",
                             type="array",
-                            column_widths=["150px", "80px", "80px", "100px", "100px", "110px", "100px", "110px", "120px", "300px"],
+                            column_widths=["150px", "80px", "80px", "100px", "100px", "110px", "100px", "110px", "120px", "220px"],
                             elem_classes=["polygon-steps-table"],
                         )
-                        polygon_opt_apply = gr.Button(value="套用 Polygon 優化並重繪", variant="primary")
+                        with gr.Row():
+                            polygon_opt_apply = gr.Button(value="套用 Polygon 優化並重繪", variant="primary")
+                            polygon_opt_clear = gr.Button(value="清空步驟", variant="secondary")
 
                     with gr.Tab("配置管理 (Config)"):
                         gr.Markdown("### 儲存 / 載入配置\n將目前的「顯示 / 執行」、「Mask 優化」與「Polygon 優化」設定匯出為 JSON，或從檔案還原。")
@@ -868,6 +892,85 @@ def app():
                 polygon_step_class_filter_query,
             ],
         )
+        # ======== 步驟參數對應表（動態顯示 + 加入步驟時只記錄相關參數） ========
+        MASK_STEP_PARAMS = {
+            "erode": ("morph_kernel",),
+            "dilate": ("morph_kernel",),
+            "distance_erode": ("morph_kernel",),
+            "distance_dilate": ("morph_kernel",),
+            "split": (),
+            "merge": ("merge_iou_threshold",),
+            "blur": ("blur_kernel", "blur_threshold"),
+            "remove_small": ("min_component_area",),
+            "fill_holes": ("max_hole_area",),
+        }
+        MASK_PARAM_ORDER = (
+            "morph_kernel", "blur_kernel", "blur_threshold",
+            "min_component_area", "max_hole_area", "merge_iou_threshold",
+        )
+        POLYGON_STEP_PARAMS = {
+            "convex_hull": (),
+            "rdp": ("eps_coeff",),
+            "visvalingam_whyatt": ("eps_coeff",),
+            "min_area_rect": ("min_aspect",),
+            "export_line": ("min_aspect",),
+            "polygon_to_lane_line": ("eps_coeff",),
+            "pca": ("eps_coeff", "pca_min_cosine", "pca_cross_class"),
+            "small_object_fit": ("max_area_px", "target_vertices"),
+        }
+        POLYGON_PARAM_ORDER = (
+            "eps_coeff", "min_aspect", "pca_min_cosine",
+            "pca_cross_class", "max_area_px", "target_vertices",
+        )
+
+        def on_mask_method_change(method):
+            visible = set(MASK_STEP_PARAMS.get(method, ()))
+            return [gr.update(visible=(p in visible)) for p in MASK_PARAM_ORDER]
+
+        mask_opt_method.change(
+            fn=on_mask_method_change,
+            inputs=[mask_opt_method],
+            outputs=[
+                step_morph_kernel, step_blur_kernel, step_blur_threshold,
+                step_min_component_area, step_max_hole_area, step_merge_iou_threshold,
+            ],
+        )
+
+        def on_polygon_method_change(method):
+            visible = set(POLYGON_STEP_PARAMS.get(method, ()))
+            return [gr.update(visible=(p in visible)) for p in POLYGON_PARAM_ORDER]
+
+        polygon_opt_method.change(
+            fn=on_polygon_method_change,
+            inputs=[polygon_opt_method],
+            outputs=[
+                polygon_step_eps_coeff, polygon_step_min_aspect, polygon_step_pca_min_cosine,
+                polygon_step_pca_cross_class, polygon_step_max_area_px, polygon_step_target_vertices,
+            ],
+        )
+
+        # ======== 加入步驟 ========
+        def _snapshot_class_filter(class_filter_in, all_choices_in):
+            """未選或全選 → 存空字串（= 全部類別），否則存逗號分隔清單。"""
+            if class_filter_in is None:
+                return ""
+            if isinstance(class_filter_in, (list, tuple, set)):
+                valid_items = [str(x) for x in class_filter_in if x is not None]
+                all_items = [str(x) for x in (all_choices_in or [])]
+                if not valid_items or (all_items and set(valid_items) >= set(all_items)):
+                    return ""
+                return ", ".join(valid_items)
+            return str(class_filter_in)
+
+        def _steps_to_rows(steps):
+            if steps is None:
+                return []
+            if hasattr(steps, "tolist"):
+                return steps.tolist()
+            if isinstance(steps, list):
+                return list(steps)
+            return []
+
         def add_mask_step(
             steps,
             method,
@@ -879,38 +982,25 @@ def app():
             max_hole_area_in,
             merge_iou_threshold_in,
             class_filter_in,
+            all_choices_in,
         ):
-            if isinstance(class_filter_in, (list, tuple, set)):
-                # [Modified] Convert list to comma-joined string to avoid "['a', 'b']" stringification issue
-                valid_items = [str(x) for x in class_filter_in if x is not None]
-                class_filter_snapshot = ", ".join(valid_items)
-            elif class_filter_in is None:
-                class_filter_snapshot = None
-            else:
-                class_filter_snapshot = str(class_filter_in)
-            if steps is None:
-                rows = []
-            elif hasattr(steps, "tolist"):
-                rows = steps.tolist()
-            elif isinstance(steps, list):
-                rows = list(steps)
-            else:
-                rows = []
+            rows = _steps_to_rows(steps)
+            params = {
+                "morph_kernel": morph_kernel_in,
+                "blur_kernel": blur_kernel_in,
+                "blur_threshold": blur_threshold_in,
+                "min_component_area": min_component_area_in,
+                "max_hole_area": max_hole_area_in,
+                "merge_iou_threshold": merge_iou_threshold_in,
+            }
+            relevant = set(MASK_STEP_PARAMS.get(method, ()))
             rows.append(
-                [
-                    method,
-                    True,
-                    int(count),
-                    morph_kernel_in,
-                    blur_kernel_in,
-                    blur_threshold_in,
-                    min_component_area_in,
-                    max_hole_area_in,
-                    merge_iou_threshold_in,
-                    class_filter_snapshot,
-                ]
+                [method, True, int(count)]
+                + [params[p] if p in relevant else None for p in MASK_PARAM_ORDER]
+                + [_snapshot_class_filter(class_filter_in, all_choices_in)]
             )
-            return rows
+            # 加入步驟即代表要使用優化 → 自動勾選啟用（不會觸發重算，需按「套用」）
+            return rows, gr.update(value=True)
 
         mask_opt_add.click(
             fn=add_mask_step,
@@ -925,8 +1015,9 @@ def app():
                 step_max_hole_area,
                 step_merge_iou_threshold,
                 step_class_filter,
+                class_choices_state,
             ],
-            outputs=[mask_opt_steps],
+            outputs=[mask_opt_steps, mask_opt_enable],
         )
 
         def add_polygon_step(
@@ -940,26 +1031,28 @@ def app():
             max_area_px_in,
             target_vertices_in,
             class_filter_in,
+            all_choices_in,
         ):
-            if isinstance(class_filter_in, (list, tuple, set)):
-                valid_items = [str(x) for x in class_filter_in if x is not None]
-                class_filter_snapshot = ", ".join(valid_items)
-            elif class_filter_in is None:
-                class_filter_snapshot = None
-            else:
-                class_filter_snapshot = str(class_filter_in)
-
-            if steps is None:
-                rows = []
-            elif hasattr(steps, "tolist"):
-                rows = steps.tolist()
-            elif isinstance(steps, list):
-                rows = list(steps)
-            else:
-                rows = []
-
-            rows.append([method, True, int(count), eps_coeff_in, min_aspect_in, pca_min_cosine_in, bool(pca_cross_class_in), float(max_area_px_in), int(target_vertices_in), class_filter_snapshot])
-            return rows
+            rows = _steps_to_rows(steps)
+            params = {
+                "eps_coeff": float(eps_coeff_in),
+                "min_aspect": float(min_aspect_in),
+                "pca_min_cosine": float(pca_min_cosine_in),
+                "pca_cross_class": bool(pca_cross_class_in),
+                "max_area_px": float(max_area_px_in),
+                "target_vertices": int(target_vertices_in),
+            }
+            relevant = set(POLYGON_STEP_PARAMS.get(method, ()))
+            row_vals = [
+                params[p] if p in relevant else (False if p == "pca_cross_class" else None)
+                for p in POLYGON_PARAM_ORDER
+            ]
+            rows.append(
+                [method, True, int(count)]
+                + row_vals
+                + [_snapshot_class_filter(class_filter_in, all_choices_in)]
+            )
+            return rows, gr.update(value=True)
 
         polygon_opt_add.click(
             fn=add_polygon_step,
@@ -974,9 +1067,14 @@ def app():
                 polygon_step_max_area_px,
                 polygon_step_target_vertices,
                 polygon_step_class_filter,
+                class_choices_state,
             ],
-            outputs=[polygon_opt_steps],
+            outputs=[polygon_opt_steps, polygon_opt_enable],
         )
+
+        # ======== 清空步驟 ========
+        mask_opt_clear.click(fn=lambda: [], inputs=[], outputs=[mask_opt_steps])
+        polygon_opt_clear.click(fn=lambda: [], inputs=[], outputs=[polygon_opt_steps])
 
         # --- Class Filter Logic Wiring ---
         # 1. When Query Changes -> Update UI Choices & Value (Read from Global)
@@ -1074,8 +1172,50 @@ def app():
                 allowed_ids,
             )
 
+        def apply_polygon_replot_clicked(
+            last_results_dict,
+            label_mode_in,
+            show_boxes_in,
+            show_masks_in,
+            show_polygons_in,
+            show_points_in,
+            show_conf_in,
+            polygon_opt_enable_in,
+            polygon_opt_steps_in,
+            input_type_in,
+            class_selected_items_in,
+        ):
+            if not polygon_opt_enable_in:
+                gr.Warning("尚未啟用 Polygon 優化：請先勾選「啟用 Polygon 優化」。目前以原始 polygon 重繪。")
+            return replot_all_filtered(
+                last_results_dict,
+                label_mode_in,
+                show_boxes_in,
+                show_masks_in,
+                show_polygons_in,
+                show_points_in,
+                show_conf_in,
+                polygon_opt_enable_in,
+                polygon_opt_steps_in,
+                input_type_in,
+                class_selected_items_in,
+            )
+
         # 標籤模式/框/遮罩/polygon/信心值 改變時即時重繪；
-        # polygon 步驟表格編輯改由「套用」按鈕觸發，避免每格編輯都重繪
+        # polygon 啟用開關只回應手動切換（.input），步驟表格編輯改由「套用」按鈕觸發
+        _replot_inputs = [
+            last_results,
+            label_mode,
+            show_boxes,
+            show_masks,
+            show_polygons,
+            show_points,
+            show_confidence,
+            polygon_opt_enable,
+            polygon_opt_steps,
+            input_type,
+            selected_classes_global,
+        ]
         for register in (
             label_mode.change,
             show_boxes.change,
@@ -1083,26 +1223,18 @@ def app():
             show_polygons.change,
             show_points.change,
             show_confidence.change,
-            polygon_opt_enable.change,
-            polygon_opt_apply.click,
+            polygon_opt_enable.input,
         ):
             register(
                 fn=replot_all_filtered,
-                inputs=[
-                    last_results,
-                    label_mode,
-                    show_boxes,
-                    show_masks,
-                    show_polygons,
-                    show_points,
-                    show_confidence,
-                    polygon_opt_enable,
-                    polygon_opt_steps,
-                    input_type,
-                    selected_classes_global,
-                ],
+                inputs=_replot_inputs,
                 outputs=[output_gallery],
             )
+        polygon_opt_apply.click(
+            fn=apply_polygon_replot_clicked,
+            inputs=_replot_inputs,
+            outputs=[output_gallery],
+        )
  
         # Global Selection Change -> Replot
         selected_classes_global.change(
@@ -1162,27 +1294,66 @@ def app():
             )
             return updated_results, gallery
 
-        # 啟用開關即時觸發；步驟表格編輯改由「套用」按鈕觸發，避免每格編輯都重跑完整 mask 管線
-        for register in (mask_opt_enable.change, mask_opt_apply.click):
-            register(
-                fn=update_mask_processing,
-                inputs=[
-                    raw_results,
-                    mask_opt_enable,
-                    mask_opt_steps,
-                    label_mode,
-                    show_boxes,
-                    show_masks,
-                    show_polygons,
-                    show_points,
-                    show_confidence,
-                    polygon_opt_enable,
-                    polygon_opt_steps,
-                    input_type,
-                    selected_classes_global,
-                ],
-                outputs=[last_results, output_gallery],
+        def apply_mask_processing_clicked(
+            raw_results_dict,
+            mask_opt_enable_in,
+            mask_opt_steps_in,
+            label_mode_in,
+            show_boxes_in,
+            show_masks_in,
+            show_polygons_in,
+            show_points_in,
+            show_conf_in,
+            polygon_opt_enable_in,
+            polygon_opt_steps_in,
+            input_type_in,
+            class_selected_items_in,
+        ):
+            if not mask_opt_enable_in:
+                gr.Warning("尚未啟用 Mask 優化：請先勾選「啟用 Mask 優化」。目前顯示未優化結果。")
+            return update_mask_processing(
+                raw_results_dict,
+                mask_opt_enable_in,
+                mask_opt_steps_in,
+                label_mode_in,
+                show_boxes_in,
+                show_masks_in,
+                show_polygons_in,
+                show_points_in,
+                show_conf_in,
+                polygon_opt_enable_in,
+                polygon_opt_steps_in,
+                input_type_in,
+                class_selected_items_in,
             )
+
+        # 啟用開關只回應手動切換（.input，即時重算）；
+        # 步驟表格編輯改由「套用」按鈕觸發，避免每格編輯都重跑完整 mask 管線
+        _mask_processing_inputs = [
+            raw_results,
+            mask_opt_enable,
+            mask_opt_steps,
+            label_mode,
+            show_boxes,
+            show_masks,
+            show_polygons,
+            show_points,
+            show_confidence,
+            polygon_opt_enable,
+            polygon_opt_steps,
+            input_type,
+            selected_classes_global,
+        ]
+        mask_opt_enable.input(
+            fn=update_mask_processing,
+            inputs=_mask_processing_inputs,
+            outputs=[last_results, output_gallery],
+        )
+        mask_opt_apply.click(
+            fn=apply_mask_processing_clicked,
+            inputs=_mask_processing_inputs,
+            outputs=[last_results, output_gallery],
+        )
 
 
         # ======== 全選 / 取消全選 ========

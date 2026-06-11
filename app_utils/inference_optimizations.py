@@ -37,21 +37,22 @@ def _coerce_float(value, default: float) -> float:
 
 
 def _normalize_class_filter(raw_value) -> Optional[List[object]]:
+    """空值（None / 空字串 / 空清單）一律視為「全部類別」→ 回傳 None（不過濾）。"""
     if raw_value is None:
         return None
     if isinstance(raw_value, (list, tuple, set)):
         if len(raw_value) == 0:
-            return []
+            return None
         tokens = [t for t in raw_value if t not in (None, "")]
     else:
         text = str(raw_value).strip()
         if text.lower() in {"all", "*", "any"}:
             return None
         if not text:
-            return []
+            return None
         tokens = [t.strip() for t in text.replace("\n", ",").split(",") if t.strip()]
     if not tokens:
-        return []
+        return None
 
     normalized: List[object] = []
     for token in tokens:
