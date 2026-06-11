@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Optional, Set
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -475,6 +476,7 @@ def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[s
     names = getattr(result, "names", {}) or {}
 
     resolved_steps = [{**step, "class_filter": _resolve_class_filter(step.get("classes"), names)} for step in steps]
+    _t0 = time.perf_counter()
     instances: List[Dict[str, Any]] = []
     for i, mask_tensor in enumerate(masks):
         binary = (mask_tensor.detach().cpu().numpy() > 0.5).astype(np.uint8)
@@ -483,8 +485,11 @@ def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[s
         cls_id = int(float(boxes_np[i][6] if is_track else boxes_np[i][5]))
         conf = float(boxes_np[i][5] if is_track else boxes_np[i][4])
         instances.append({"binary": binary, "cls_id": cls_id, "source_idx": i, "source_indices": [i], "conf": conf})
+    prepare_ms = (time.perf_counter() - _t0) * 1000
+    step_timings: List[Tuple[str, float]] = []
 
     for step in resolved_steps:
+        _t_step = time.perf_counter()
         step_name = step["name"]
         count = step["count"]
         class_filter = step.get("class_filter")
@@ -505,6 +510,7 @@ def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[s
                 instances = list(untouched)
                 for cls_instances in grouped.values():
                     instances.extend(_merge_instances_by_iou(cls_instances, step["merge_iou_threshold"]))
+            step_timings.append((f"{step_name} x{count}", (time.perf_counter() - _t_step) * 1000))
             continue
 
         next_instances: List[Dict[str, Any]] = []
@@ -546,7 +552,9 @@ def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[s
                         "conf": item["conf"],
                     })
         instances = next_instances
+        step_timings.append((f"{step_name} x{count}", (time.perf_counter() - _t_step) * 1000))
 
+    _t0 = time.perf_counter()
     new_masks: List[np.ndarray] = []
     new_boxes: List[List[float]] = []
     for item in instances:
@@ -567,6 +575,14 @@ def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[s
         else:
             new_boxes.append([x_min, y_min, x_max, y_max, conf, cls_float])
         new_masks.append(optimized.astype(np.uint8))
+    rebuild_ms = (time.perf_counter() - _t0) * 1000
+
+    steps_detail = " | ".join(f"{name} {ms:.1f}ms" for name, ms in step_timings)
+    total_ms = prepare_ms + rebuild_ms + sum(ms for _, ms in step_timings)
+    print(
+        f"[Timing] mask_opt ({len(instances)} instances): total {total_ms:.1f}ms"
+        f" | prepare {prepare_ms:.1f}ms | {steps_detail} | rebuild {rebuild_ms:.1f}ms"
+    )
 
     if not new_boxes:
         return result

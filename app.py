@@ -518,28 +518,25 @@ def app():
                 mids = [m for m in (model_ids_in or []) if m]
             mids = mids[:MAX_MODELS]
 
-            # 沒有選到任何模型：清空輸出並維持現有狀態
+            # 沒有選到任何模型：清空結果快取並維持現有狀態（未列出的元件不更新）
             if not mids:
                 # 由目前已儲存的自訂模型重建 choices，避免重置回 app 啟動時的清單
                 empty_choices, _ = persist_model_choices(saved_models_in, [])
-                return (
-                    gr.update(),  # output_gallery
-                    gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),  # v1~v5
-                    None,  # last_results
-                    None,  # raw_results
-                    gr.update(choices=empty_choices, value=[]),  # model_ids
-                    saved_models_in,  # saved_models_state
-                    gr.update(),  # class_selector
-                    class_choices_in or [],  # class_choices_state
-                    None,  # image_meta_state
-                    gr.update(choices=class_choices_in or [], value=[]),  # step_class_filter
-                    gr.update(choices=class_choices_in or [], value=[]),  # polygon_step_class_filter
-                    gr.update(value=""),
-                    gr.update(value=""),
-                    gr.update(value=[]),
-                    gr.update(value=[]),
-                    gr.update(value=[]),
-                )
+                return {
+                    last_results: None,
+                    raw_results: None,
+                    model_ids: gr.update(choices=empty_choices, value=[]),
+                    saved_models_state: saved_models_in,
+                    class_choices_state: class_choices_in or [],
+                    image_meta_state: None,
+                    step_class_filter: gr.update(choices=class_choices_in or [], value=[]),
+                    polygon_step_class_filter: gr.update(choices=class_choices_in or [], value=[]),
+                    class_filter_query: "",
+                    step_class_filter_query: "",
+                    selected_classes_global: [],
+                    step_selected_classes_global: [],
+                    polygon_step_selected_classes_global: [],
+                }
 
             # 2) 持久化自訂模型選項
             new_choices, new_saved = persist_model_choices(saved_models_in, mids)
@@ -564,43 +561,31 @@ def app():
                     c for c in (class_selected_items_in or []) if c in valid_set
                 ]
 
-            class_selector_update = gr.update(
-                choices=class_choices_new,
-                value=class_selected_items_out,
-            )
-            step_class_filter_update = gr.update(
-                choices=class_choices_new,
-                value=class_choices_new,
-            )
-            polygon_step_class_filter_update = gr.update(
-                choices=class_choices_new,
-                value=class_choices_new,
-            )
-            class_filter_query_update = gr.update(value="")
-            step_filter_query_update = gr.update(value="")
+            # 共通更新：模型清單、類別選單與全域選取狀態（各分支皆相同）
+            common_updates = {
+                model_ids: gr.update(choices=new_choices, value=mids),
+                saved_models_state: new_saved,
+                class_selector: gr.update(choices=class_choices_new, value=class_selected_items_out),
+                class_choices_state: class_choices_new,
+                step_class_filter: gr.update(choices=class_choices_new, value=class_choices_new),
+                polygon_step_class_filter: gr.update(choices=class_choices_new, value=class_choices_new),
+                class_filter_query: "",
+                step_class_filter_query: "",
+                selected_classes_global: class_selected_items_out,
+                step_selected_classes_global: class_choices_new,
+                polygon_step_selected_classes_global: class_choices_new,
+            }
 
             # 4) Image 模式
             if input_type_in == "Image":
                 if image_in is None:
-                    # 沒有圖可跑，直接回傳目前狀態
-                    return (
-                        gr.update(),
-                        gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
-                        None,
-                        None,
-                        gr.update(choices=new_choices, value=mids),
-                        new_saved,
-                        class_selector_update,
-                        class_choices_new,
-                        None,
-                        step_class_filter_update,
-                        polygon_step_class_filter_update,
-                        class_filter_query_update,
-                        step_filter_query_update,
-                        gr.update(value=class_selected_items_out),
-                        gr.update(value=class_choices_new),
-                        gr.update(value=class_choices_new),
-                    )
+                    # 沒有圖可跑：清空結果快取並回傳共通更新
+                    return {
+                        **common_updates,
+                        last_results: None,
+                        raw_results: None,
+                        image_meta_state: None,
+                    }
 
                 # 4-1) 多模型推論（不渲染，渲染統一交給 render_gallery_from_results）
                 results_cache = yolov12_multi_predict_image(
@@ -661,50 +646,29 @@ def app():
                     "height": int(height),
                 }
 
-                return (
-                    gallery,
-                    gr.update(value=None, label="Model #1"),
-                    gr.update(value=None, label="Model #2"),
-                    gr.update(value=None, label="Model #3"),
-                    gr.update(value=None, label="Model #4"),
-                    gr.update(value=None, label="Model #5"),
-                    results_cache,  # last_results
-                    raw_results_cache,  # raw_results
-                    gr.update(choices=new_choices, value=mids),  # model_ids
-                    new_saved,  # saved_models_state
-                    class_selector_update,
-                    class_choices_new,
-                    image_meta,  # image_meta_state
-                    step_class_filter_update,
-                    polygon_step_class_filter_update,
-                    class_filter_query_update,
-                    step_filter_query_update,
-                    gr.update(value=class_selected_items_out),  # Update Global Selection
-                    gr.update(value=class_choices_new), # Update Step Global Selection
-                    gr.update(value=class_choices_new), # Update Polygon Step Global Selection
-                )
+                return {
+                    **common_updates,
+                    output_gallery: gallery,
+                    v1: gr.update(value=None, label="Model #1"),
+                    v2: gr.update(value=None, label="Model #2"),
+                    v3: gr.update(value=None, label="Model #3"),
+                    v4: gr.update(value=None, label="Model #4"),
+                    v5: gr.update(value=None, label="Model #5"),
+                    last_results: results_cache,
+                    raw_results: raw_results_cache,
+                    image_meta_state: image_meta,
+                }
 
             # 5) Video 模式
             else:
                 if video_in is None:
-                    return (
-                        gr.update(),
-                        gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
-                        None,
-                        None,
-                        gr.update(choices=new_choices, value=mids),
-                        new_saved,
-                        class_selector_update,
-                        class_choices_new,
-                        None,
-                        step_class_filter_update,
-                        polygon_step_class_filter_update,
-                        class_filter_query_update,
-                        step_filter_query_update,
-                        gr.update(value=class_selected_items_out),
-                        gr.update(value=class_choices_new),
-                        gr.update(value=class_choices_new),
-                    )
+                    # 沒有影片可跑：清空結果快取並回傳共通更新
+                    return {
+                        **common_updates,
+                        last_results: None,
+                        raw_results: None,
+                        image_meta_state: None,
+                    }
 
                 outs = yolov12_multi_inference_video(
                     video_in,
@@ -730,28 +694,17 @@ def app():
                 for idx, (mid, out_path) in enumerate(outs[:5]):
                     video_updates[idx] = gr.update(value=out_path, label=str(mid), visible=True)
 
-                return (
-                    gr.update(),  # output_gallery
-                    video_updates[0],
-                    video_updates[1],
-                    video_updates[2],
-                    video_updates[3],
-                    video_updates[4],
-                    None,  # last_results（影片不快取）
-                    None,  # raw_results
-                    gr.update(choices=new_choices, value=mids),
-                    new_saved,
-                    class_selector_update,
-                    class_choices_new,
-                    None,  # image_meta_state（影片無需）
-                    step_class_filter_update,
-                    polygon_step_class_filter_update,
-                    class_filter_query_update,
-                    step_filter_query_update,
-                    gr.update(value=class_selected_items_out),
-                    gr.update(value=class_choices_new),
-                    gr.update(value=class_choices_new),
-                )
+                return {
+                    **common_updates,
+                    v1: video_updates[0],
+                    v2: video_updates[1],
+                    v3: video_updates[2],
+                    v4: video_updates[3],
+                    v5: video_updates[4],
+                    last_results: None,  # 影片不快取
+                    raw_results: None,
+                    image_meta_state: None,  # 影片無需
+                }
 
         yolov12_infer.click(
             fn=run_inference,

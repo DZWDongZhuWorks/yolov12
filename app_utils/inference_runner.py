@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -29,8 +30,21 @@ def predict_image_single(
     predict_kwargs = {"source": image, "imgsz": image_size, "conf": conf_threshold}
     if device:
         predict_kwargs["device"] = device
+    _t0 = time.perf_counter()
     results = model.predict(**predict_kwargs)
-    return [r.cpu() for r in results]
+    predict_ms = (time.perf_counter() - _t0) * 1000
+    _t0 = time.perf_counter()
+    results = [r.cpu() for r in results]
+    to_cpu_ms = (time.perf_counter() - _t0) * 1000
+
+    speed = getattr(results[0], "speed", None) if results else None
+    detail = ""
+    if speed:
+        detail = " (" + " | ".join(
+            f"{k} {v:.1f}ms" for k, v in speed.items() if isinstance(v, (int, float))
+        ) + ")"
+    print(f"[Timing] predict {model_id}: total {predict_ms:.1f}ms{detail} | to_cpu {to_cpu_ms:.1f}ms")
+    return results
 
 
 def infer_image_single(

@@ -1,5 +1,6 @@
 # app_utils/polygon_utils.py
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import cv2
 
@@ -698,7 +699,9 @@ def _apply_ordered_polygon_steps(objects: List[Dict[str, Any]], steps: Optional[
     if not objects or not steps:
         return
 
+    step_timings: List[Tuple[str, float]] = []
     for step in steps:
+        _t_step = time.perf_counter()
         name = str(step.get("name", "")).strip().lower()
         if name in {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "small_object_fit"}:
             for obj in objects:
@@ -715,8 +718,19 @@ def _apply_ordered_polygon_steps(objects: List[Dict[str, Any]], steps: Optional[
             _apply_object_lane_line(objects, step)
         elif name == "pca":
             _apply_pca_alignment(objects, step)
+        count = max(1, int(step.get("count", 1) or 1))
+        step_timings.append((f"{name} x{count}", (time.perf_counter() - _t_step) * 1000))
 
+    _t0 = time.perf_counter()
     _sync_line_string_payloads(objects)
+    sync_ms = (time.perf_counter() - _t0) * 1000
+
+    steps_detail = " | ".join(f"{name} {ms:.1f}ms" for name, ms in step_timings)
+    total_ms = sync_ms + sum(ms for _, ms in step_timings)
+    print(
+        f"[Timing] polygon_opt ({len(objects)} objects): total {total_ms:.1f}ms"
+        f" | {steps_detail} | sync {sync_ms:.1f}ms"
+    )
 
 
 
