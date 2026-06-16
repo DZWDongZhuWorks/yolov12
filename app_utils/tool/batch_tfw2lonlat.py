@@ -16,9 +16,10 @@ from app_utils.tool.tfw2lonlat import (
     _convert_coord_list
 )
 
-def batch_process(json_dir: Path, output_dir: Path, tfw_dir: Path, src_epsg: int):
+def batch_process(json_dir: Path, output_dir: Path, tfw_dir: Path, src_epsg: int,
+                  rotation_map: dict | None = None):
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     print(f"[Info] 初始化座標轉換: EPSG:{src_epsg} -> EPSG:4326")
     transformer = Transformer.from_crs(
         f"EPSG:{src_epsg}", 
@@ -82,7 +83,8 @@ def batch_process(json_dir: Path, output_dir: Path, tfw_dir: Path, src_epsg: int
         if isinstance(data, dict) and data.get("type") == "FeatureCollection":
             result = convert_geojson_featurecollection(data, wf, transformer, crop_x, crop_y)
         elif isinstance(data, dict) and "objects" in data:
-            result = convert_yolo_json_to_geojson(data, wf, transformer, crop_x, crop_y)
+            result = convert_yolo_json_to_geojson(data, wf, transformer, crop_x, crop_y,
+                                                  rotation_map=rotation_map)
         else:
             # 備用：通用遞迴
             result = _convert_coord_list(data, wf, transformer, crop_x, crop_y)
@@ -108,6 +110,8 @@ def main():
     parser.add_argument("--output-dir", required=True, type=Path, help="輸出的 GeoJSON 資料夾路徑")
     parser.add_argument("--tfw-dir", required=True, type=Path, help="原始 TFW/JGW 檔案所在資料夾路徑")
     parser.add_argument("--src-epsg", type=int, default=3826, help="原始 TIF 的 EPSG 代碼 (預設 3826)")
+    parser.add_argument("--rotation-map", type=Path, default=None,
+                        help="旋轉切片方向對照表（detect_slice_rotation.py 產出）")
 
     args = parser.parse_args()
 
@@ -119,7 +123,15 @@ def main():
         print(f"[Error] TFW 資料夾不存在: {args.tfw_dir}")
         return
 
-    batch_process(args.json_dir, args.output_dir, args.tfw_dir, args.src_epsg)
+    rotation_map = None
+    if args.rotation_map:
+        with args.rotation_map.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        rotation_map = payload.get("directions", payload)  # 支援純 dict 或含 details 的格式
+        print(f"[Info] 載入 rotation map: {len(rotation_map)} 個旋轉切片")
+
+    batch_process(args.json_dir, args.output_dir, args.tfw_dir, args.src_epsg,
+                  rotation_map=rotation_map)
 
 if __name__ == "__main__":
     main()
