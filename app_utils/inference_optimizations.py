@@ -205,7 +205,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
     elif not steps_input:
         return []
 
-    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line", "small_object_fit"}
+    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line", "small_object_fit", "smooth_spline", "fit_lines_arcs", "fit_spline_pca"}
     steps: List[Dict[str, Any]] = []
 
     if isinstance(steps_input, str):
@@ -457,36 +457,22 @@ def _merge_instances_by_iou(instances: List[Dict[str, Any]], iou_threshold: floa
     return merged_instances
 
 
-def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[str, Any]]):
-    if not enabled or not steps:
-        return result
-    if not hasattr(result, "masks") or result.masks is None:
-        return result
-    if not hasattr(result, "boxes") or result.boxes is None:
-        return result
+def resolve_mask_step_filters(steps: List[Dict[str, Any]], names: Dict[int, str]) -> List[Dict[str, Any]]:
+    """把 mask 優化步驟的 classes（名稱/ID 混合）解析為 class_filter 集合。"""
+    return [{**step, "class_filter": _resolve_class_filter(step.get("classes"), names)} for step in steps]
 
-    masks = result.masks.data
-    boxes_data = result.boxes.data
-    if masks is None or len(masks) == 0 or boxes_data is None or len(boxes_data) == 0:
-        return result
 
-    orig_shape = result.orig_shape
-    mask_shape = masks.shape[1:]
-    boxes_np = boxes_data.detach().cpu().numpy()
-    is_track = result.boxes.is_track
-    names = getattr(result, "names", {}) or {}
+def apply_mask_steps_to_instances(
+    instances: List[Dict[str, Any]],
+    resolved_steps: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Tuple[str, float]]]:
+    """對 instance dicts 依序套用 mask 優化步驟，回傳 (instances, step_timings)。
 
-    resolved_steps = [{**step, "class_filter": _resolve_class_filter(step.get("classes"), names)} for step in steps]
-    _t0 = time.perf_counter()
-    instances: List[Dict[str, Any]] = []
-    for i, mask_tensor in enumerate(masks):
-        binary = (mask_tensor.detach().cpu().numpy() > 0.5).astype(np.uint8)
-        if binary.sum() == 0:
-            continue
-        cls_id = int(float(boxes_np[i][6] if is_track else boxes_np[i][5]))
-        conf = float(boxes_np[i][5] if is_track else boxes_np[i][4])
-        instances.append({"binary": binary, "cls_id": cls_id, "source_idx": i, "source_indices": [i], "conf": conf})
-    prepare_ms = (time.perf_counter() - _t0) * 1000
+    instance 至少需含 {binary, cls_id, conf}；其餘欄位（如 source_idx）在
+    形態學步驟中原樣保留。例外："merge" 步驟經 _merge_instances_by_iou 重建欄位，
+    僅保留 binary/cls_id/conf/source_idx/source_indices。
+    resolved_steps 需先經 resolve_mask_step_filters 解析 class_filter。
+    """
     step_timings: List[Tuple[str, float]] = []
 
     for step in resolved_steps:
@@ -545,15 +531,48 @@ def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[s
 
             for binary in binaries:
                 if binary.sum() > 0:
-                    next_instances.append({
-                        "binary": binary,
-                        "cls_id": item["cls_id"],
-                        "source_idx": item["source_idx"],
-                        "source_indices": list(item.get("source_indices", [item["source_idx"]])),
-                        "conf": item["conf"],
-                    })
+                    new_item = {**item, "binary": binary}
+                    if "source_indices" in item:
+                        new_item["source_indices"] = list(item["source_indices"])
+                    next_instances.append(new_item)
         instances = next_instances
         step_timings.append((f"{step_name} x{count}", (time.perf_counter() - _t_step) * 1000))
+
+    return instances, step_timings
+
+
+def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[str, Any]]):
+    if not enabled or not steps:
+        return result
+    if not hasattr(result, "masks") or result.masks is None:
+        return result
+    if not hasattr(result, "boxes") or result.boxes is None:
+        return result
+
+    masks = result.masks.data
+    boxes_data = result.boxes.data
+    if masks is None or len(masks) == 0 or boxes_data is None or len(boxes_data) == 0:
+        return result
+
+    orig_shape = result.orig_shape
+    mask_shape = masks.shape[1:]
+    boxes_np = boxes_data.detach().cpu().numpy()
+    is_track = result.boxes.is_track
+    names = getattr(result, "names", {}) or {}
+
+    resolved_steps = resolve_mask_step_filters(steps, names)
+    _t0 = time.perf_counter()
+    instances: List[Dict[str, Any]] = []
+    for i, mask_tensor in enumerate(masks):
+        binary = (mask_tensor.detach().cpu().numpy() > 0.5).astype(np.uint8)
+        if binary.sum() == 0:
+            continue
+        cls_id = int(float(boxes_np[i][6] if is_track else boxes_np[i][5]))
+        conf = float(boxes_np[i][5] if is_track else boxes_np[i][4])
+        instances.append({"binary": binary, "cls_id": cls_id, "source_idx": i, "source_indices": [i], "conf": conf})
+    prepare_ms = (time.perf_counter() - _t0) * 1000
+
+    instances, step_timings = apply_mask_steps_to_instances(instances, resolved_steps)
 
     _t0 = time.perf_counter()
     new_masks: List[np.ndarray] = []

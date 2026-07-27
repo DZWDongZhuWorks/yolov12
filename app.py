@@ -330,7 +330,7 @@ def app():
                             with gr.Row():
                                 polygon_opt_method = gr.Dropdown(
                                     label="步驟方法",
-                                    choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "polygon_to_lane_line", "pca", "small_object_fit"],
+                                    choices=["convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "polygon_to_lane_line", "pca", "small_object_fit", "smooth_spline", "fit_lines_arcs", "fit_spline_pca"],
                                     value="rdp",
                                 )
                                 polygon_opt_count = gr.Slider(
@@ -951,6 +951,9 @@ def app():
             "polygon_to_lane_line": ("eps_coeff",),
             "pca": ("eps_coeff", "pca_min_cosine", "pca_cross_class"),
             "small_object_fit": ("max_area_px", "target_vertices"),
+            "smooth_spline": ("eps_coeff",),
+            "fit_lines_arcs": ("eps_coeff",),
+            "fit_spline_pca": ("eps_coeff",),
         }
         POLYGON_PARAM_ORDER = (
             "eps_coeff", "min_aspect", "pca_min_cosine",
@@ -1576,52 +1579,21 @@ def app():
 
 
 def run_cli(args):
-    from app_utils.inference_optimizations import apply_mask_optimizations_to_result, parse_mask_steps
+    from app_utils.inference_optimizations import apply_mask_optimizations_to_result
+    from app_utils.cli_config import load_inference_config
 
-    # === 1. 定義所有參數的預設值 ===
-    label_mode = "顯示 class name"
-    show_boxes = True
-    show_masks = True
-    show_polygons = True
-    show_points = True
-    show_conf = True
-    allowed_class_ids = None
-    mask_opt_en = False
-    mask_opt_st = []
-    polygon_opt_en = False
-    polygon_opt_st = []
-
-    # === 2. 如果有提供 config，則從檔案覆蓋預設值 ===
-    if args.config and os.path.exists(args.config):
-        print(f"Loading config from {args.config}...")
-        with open(args.config, "r", encoding="utf-8") as f:
-            config = json.load(f)
-
-        display = config.get("display", {})
-        label_mode = display.get("label_mode", label_mode)
-        show_boxes = display.get("show_boxes", show_boxes)
-        show_masks = display.get("show_masks", show_masks)
-        show_polygons = display.get("show_polygons", show_polygons)
-        show_points = display.get("show_points", show_points)
-        show_conf = display.get("show_confidence", show_conf)
-        
-        allowed_class_ids = config.get("class_filter", None)
-        if allowed_class_ids is not None:
-            allowed_class_ids = parse_selected_to_ids(allowed_class_ids)
-
-        mask_opt = config.get("mask_optimizations", {})
-        mask_opt_en = mask_opt.get("enabled", False)
-        mask_opt_st = mask_opt.get("steps", [])
-        
-        polygon_opt = config.get("polygon_optimizations", {})
-        polygon_opt_en = polygon_opt.get("enabled", False)
-        polygon_opt_st = polygon_opt.get("steps", [])
-    else:
-        print("No config file provided or file not found. Using default settings (Optimization: OFF).")
-
-    # 解析優化步驟 (如果為空或是 OFF，解析出來會是 None 或空清單)
-    mask_steps_parsed = parse_mask_steps(mask_opt_st) if mask_opt_en else None
-    polygon_steps_parsed = parse_polygon_steps(polygon_opt_st) if polygon_opt_en else []
+    # === 1+2. 載入 config（不存在時使用預設值，優化全關） ===
+    cfg = load_inference_config(args.config)
+    label_mode = cfg["label_mode"]
+    show_boxes = cfg["show_boxes"]
+    show_masks = cfg["show_masks"]
+    show_polygons = cfg["show_polygons"]
+    show_points = cfg["show_points"]
+    show_conf = cfg["show_conf"]
+    allowed_class_ids = cfg["allowed_class_ids"]
+    mask_opt_en = cfg["mask_opt_enabled"]
+    mask_steps_parsed = cfg["mask_steps_parsed"]
+    polygon_steps_parsed = cfg["polygon_steps_parsed"]
 
     models = [m.strip() for m in args.models.split(",")]
     

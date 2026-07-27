@@ -107,3 +107,56 @@ Dataframe 欄位順序：`step, enabled, count, eps_coeff, min_aspect, pca_min_c
 ```
 
 > 舊版 8 欄 config 仍可被自動讀入並補上預設的 `max_area_px = 5000.0` 與 `target_vertices = 8`。
+
+---
+
+## 四、 幾何正則化／平滑：`smooth_spline`、`fit_lines_arcs`（去鋸齒）
+
+`rdp`、`visvalingam_whyatt` 是**抽點**（從原始點挑子集），保留的頂點仍釘在像素階梯上，所以
+宏觀變稀疏但微觀仍鋸齒。以下兩個 step 改為**把點移到平滑模型上**，得到較平整的直線/弧線。
+兩者都重載既有 `eps_coeff` 欄位當強度旋鈕，且都會同步套用到洞（與 `rdp` 同屬 `simplifies_holes`）。
+
+| Step | 適用 | `eps_coeff` 語義 | 特性 |
+| :--- | :--- | :--- | :--- |
+| `smooth_spline` | 帶狀/曲線標線 | 平滑強度（越大越平滑） | scipy B-spline 近似（Chaikin fallback）；開放線端點錨定；**會磨圓真實銳角** → 箭頭/文字請用 `classes` 排除 |
+| `fit_lines_arcs` | 直線 + 弧線標線 | RDP 找角容差 | RDP 找結構性轉角（銳角原樣保留）→ 段內以 TLS 直線 / Taubin 圓弧擇優擬合；直線段收成弦、彎曲段換成平滑弧 |
+
+> 重要：平滑/擬合必須跑在**稠密點**上，recipe 中要排在任何 `rdp`/`visvalingam_whyatt` **之前**。
+> `fit_lines_arcs` 內部已用 RDP 找角，與獨立 `rdp` step 互補、勿當競爭 step 同時跑。
+
+建議 recipe：
+- 直線/弧線標線：`fit_lines_arcs`（可選再接 `pca` 對齊、輕量 `rdp` 修點數）
+- 帶狀/曲線標線：`smooth_spline` →（可選）`polygon_to_lane_line`
+
+```json
+{
+  "polygon_optimizations": {
+    "enabled": true,
+    "steps": [
+      ["fit_lines_arcs", true, 1, 1.0, 0.0, 0.94, false, 5000.0, 8, "lane, stop_line"],
+      ["smooth_spline",  true, 1, 1.5, 0.0, 0.94, false, 5000.0, 8, "crosswalk"]
+    ]
+  }
+}
+```
+
+### `pca` 的 Manhattan 正則化（平行/垂直對齊）
+
+`pca` step 新增 `pca_manhattan` 選項（預設關閉，不影響既有行為）：開啟時把各群方向軸吸附到
+全域正交框架，強制標線彼此平行/垂直；重載 `pca_min_cosine` 當吸附門檻（避免把真正的 45° 斜線扳直）。
+
+## 五、 Sub-pixel 輪廓抽取（層次 0，治本去鋸齒，opt-in）
+
+鋸齒源頭是 hard-threshold（`mask > 0.5`）+ 整數輪廓。`build_objects_from_result(..., subpixel_contour=True,
+subpixel_scale=3)` 改以**浮點機率圖上採樣**抽輪廓，去除大部分 1px 階梯。預設關閉以保護既有行為；
+對下游所有 step 都有益（輸入更乾淨 → `eps_coeff` 可調更低）。
+
+## 六、 對比評估工具
+
+在真實結果上同框比較 RDP vs spline vs line-arc（點數、與稠密輪廓的最大/平均偏差、overlay）：
+
+```bash
+python -m app_utils.polygon_comparison --weights best.pt --image a.jpg --classes 12,13 --out cmp_out
+# 加 --subpixel 評估層次 0 的效果
+python -m app_utils.polygon_comparison --weights best.pt --image a.jpg --subpixel --out cmp_sub
+```
