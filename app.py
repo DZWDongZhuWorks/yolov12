@@ -57,6 +57,22 @@ APP_CSS = """
 }
 """
 
+LABEL_MODE_CHOICES = ["隱藏", "顯示 class id", "顯示 class name"]
+DEFAULT_LABEL_MODE = "顯示 class name"
+
+
+def normalize_label_mode(value):
+    """把 config 內的 label_mode 正規化成 Radio 可接受的單一選項。
+
+    舊版 / 手改的 config 可能寫成 list（例如同時列出 class id 與 class name），
+    直接丟給 gr.Radio 會在 preprocess 時炸掉，因此這裡取第一個合法值。
+    """
+    if isinstance(value, (list, tuple)):
+        value = next((v for v in value if v in LABEL_MODE_CHOICES), None)
+    if value not in LABEL_MODE_CHOICES:
+        return DEFAULT_LABEL_MODE
+    return value
+
 
 def app():
     with gr.Blocks(css=APP_CSS) as demo:
@@ -112,8 +128,8 @@ def app():
 
                     with gr.Tab("顯示 / 執行"):
                         label_mode = gr.Radio(
-                            choices=["隱藏", "顯示 class id", "顯示 class name"],
-                            value="顯示 class name",
+                            choices=LABEL_MODE_CHOICES,
+                            value=DEFAULT_LABEL_MODE,
                             label="標籤模式",
                         )
                         show_boxes = gr.Checkbox(value=True, label="顯示 bbox 外框")
@@ -1302,7 +1318,7 @@ def app():
                 return (gr.update(),)*11 + (gr.update(), gr.update(), gr.update())
                 
             display = config.get("display", {})
-            label_mode_v = display.get("label_mode", "顯示 class name")
+            label_mode_v = normalize_label_mode(display.get("label_mode", DEFAULT_LABEL_MODE))
             show_boxes_v = display.get("show_boxes", True)
             show_masks_v = display.get("show_masks", True)
             show_polygons_v = display.get("show_polygons", True)
@@ -1360,7 +1376,7 @@ def run_cli(args):
     from app_utils.export_utils import export_results_cache
 
     # === 1. 定義所有參數的預設值 ===
-    label_mode = "顯示 class name"
+    label_mode = DEFAULT_LABEL_MODE
     show_boxes = True
     show_masks = True
     show_polygons = True
@@ -1379,7 +1395,7 @@ def run_cli(args):
             config = json.load(f)
 
         display = config.get("display", {})
-        label_mode = display.get("label_mode", label_mode)
+        label_mode = normalize_label_mode(display.get("label_mode", label_mode))
         show_boxes = display.get("show_boxes", show_boxes)
         show_masks = display.get("show_masks", show_masks)
         show_polygons = display.get("show_polygons", show_polygons)
