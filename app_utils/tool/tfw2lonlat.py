@@ -2,11 +2,50 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple, Any, List, Dict, Optional
 
 from pyproj import Transformer
+
+# 檔名中的裁切尺寸 token：..._{W}x{H}.png
+_DIM_TOKEN_PATTERN = re.compile(r"_(\d+)x(\d+)(?:\.|_|$)")
+
+
+def _detect_stored_rotation(image_info: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    """偵測「直式裁切、旋轉 90° 後儲存」的切片。
+
+    檔名中的 _WxH 代表在原始大圖上裁切的真實區域（與 crop 偏移同座標系）；
+    若與實際影像尺寸恰好對調（W,H == 實際高,寬），表示儲存影像被旋轉了 90°，
+    局部座標需反旋轉回原始方向才能套用 crop 偏移。
+    回傳檔名中的 (W, H)；無旋轉時回傳 None。
+
+    注意：旋轉「方向」無法由座標判斷，需由 rotation map（影像比對結果）提供，
+    參見 detect_slice_rotation.py。
+    """
+    fname = str(image_info.get("file_name") or "")
+    m = _DIM_TOKEN_PATTERN.search(fname)
+    if not m:
+        return None
+    w_name, h_name = int(m.group(1)), int(m.group(2))
+    img_w, img_h = image_info.get("width"), image_info.get("height")
+    if img_w is None or img_h is None or w_name == h_name:
+        return None
+    if (int(img_w), int(img_h)) == (h_name, w_name):
+        return (float(w_name), float(h_name))
+    return None
+
+
+def _derotate_coords(coords: List, w_name: float, h_name: float, direction: str) -> List[List[float]]:
+    """儲存影像座標 -> 原始直式區域座標。
+
+    direction = "cw" ：儲存影像 = 原始區域順時針轉 90° -> (x, y) -> (y, H - x)
+    direction = "ccw"：儲存影像 = 原始區域逆時針轉 90° -> (x, y) -> (W - y, x)
+    """
+    if direction == "ccw":
+        return [[w_name - float(c[1]), float(c[0])] for c in coords]
+    return [[float(c[1]), h_name - float(c[0])] for c in coords]
 
 
 # ==========================================
@@ -159,13 +198,32 @@ def convert_yolo_json_to_geojson(
     transformer: Transformer,
     crop_x: float,
     crop_y: float,
+    rotation_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     將 YOLO 偵測結果轉為 GeoJSON。
     包含 Polygon 閉合修正、BBox 轉換，並透過點序列閉合狀態判斷 Polygon/LineString。
+
+    rotation_map: {切片檔名(去副檔名): "cw"|"ccw"}，由 detect_slice_rotation.py 產生；
+    旋轉切片不在 map 中時預設 "cw" 並警告。
     """
     features: List[Dict[str, Any]] = []
     objects = obj.get("objects", [])
+
+    # 旋轉切片偵測：檔名 WxH 與實際影像尺寸對調 → 局部座標需先反旋轉
+    image_info = obj.get("image", {}) or {}
+    rot_dims = _detect_stored_rotation(image_info)
+    rot_dir = "cw"
+    if rot_dims is not None:
+        fname = str(image_info.get("file_name") or "")
+        stem = fname.rsplit(".", 1)[0]
+        mapped = (rotation_map or {}).get(stem)
+        if mapped in ("cw", "ccw"):
+            rot_dir = mapped
+        else:
+            print(f"[Warning] 旋轉切片 {fname} 不在 rotation map 中，預設視為順時針(cw)。"
+                  f"建議先用 detect_slice_rotation.py 產生方向對照表。")
+        print(f"[Info] 偵測到旋轉切片（{rot_dir}），自動反旋轉座標: {fname}")
 
     for idx, o in enumerate(objects):
         if not isinstance(o, dict):
@@ -177,67 +235,112 @@ def convert_yolo_json_to_geojson(
         confidence = o.get("confidence")
         bbox_pixel = o.get("bbox_xyxy")  # [x1, y1, x2, y2]
         polygons = o.get("polygons", []) # List[List[[x,y]...]]
+        holes_aligned = o.get("holes") or []        # 與 polygons 索引對齊的洞清單（新版欄位，可缺漏）
+        line_strings = o.get("line_strings") or []  # lane line 步驟輸出（閉合座標 = 環形線，非面）
 
         # --- 1. 處理幾何 (Polygon/LineString) ---
-        geometry_type: Optional[str] = None
-        converted_shapes: List[List[List[float]]] = []
-
-        # 遍歷輸入的每一個點序列 (可能是一個多邊形的外環，或是一條線)
-        for poly_ring in polygons:
-            
-            # 檢查原始像素座標是否閉合 (首尾點是否相同)
-            is_input_closed = (len(poly_ring) > 2 and poly_ring[0] == poly_ring[-1])
-            
-            # 轉換座標 (先轉換，不論是否閉合)
-            transformed_ring = _convert_coord_list(
-                poly_ring, wf, transformer, crop_x, crop_y
-            )
-            
-            # --- 決定類型與 GeoJSON 閉合修正 ---
-            current_type = None
-            if is_input_closed:
-                # 判斷為 Polygon。強制 GeoJSON 閉合規範。
-                current_type = "Polygon"
-                if transformed_ring and transformed_ring[0] != transformed_ring[-1]:
-                    transformed_ring.append(transformed_ring[0])
-                    
-            elif len(transformed_ring) >= 2:
-                # 判斷為 LineString (開放狀態，且至少兩個點)
-                current_type = "LineString"
-            else:
-                continue # 點數不足，跳過
-
-            # --- 類型一致性檢查 ---
-            if geometry_type is None:
-                geometry_type = current_type # 設定第一個檢測到的類型
-            elif geometry_type != current_type:
-                # 如果一個 Feature 內包含混合類型 (LineString 和 Polygon)，這是無效的 GeoJSON Feature，跳過此幾何
-                print(f"Warning: Object {idx} contains mixed Polygon/LineString geometries. Skipping geometry conversion.")
-                geometry_type = None
-                break
-                
-            converted_shapes.append(transformed_ring)
-        
-        # --- 最終組裝 Geometry ---
         geometry = None
-        if converted_shapes:
-            if geometry_type == "Polygon":
-                if len(converted_shapes) == 1:
-                    # 單一 Polygon: GeoJSON 座標結構: [[外環], [內環1], ...]
-                    geometry = {"type": "Polygon", "coordinates": converted_shapes}
+
+        # 1-a. line_strings 優先：物件經 polygon_to_lane_line 轉換後，
+        #      閉合座標（首尾相同）代表「環形 lane line」，須輸出 LineString 而非 Polygon
+        if line_strings:
+            converted_lines: List[List[List[float]]] = []
+            for ls in line_strings:
+                coords = ls.get("coordinates") if isinstance(ls, dict) else ls
+                if not coords or len(coords) < 2:
+                    continue
+                if rot_dims is not None:
+                    coords = _derotate_coords(coords, rot_dims[0], rot_dims[1], rot_dir)
+                converted_lines.append(_convert_coord_list(coords, wf, transformer, crop_x, crop_y))
+            if len(converted_lines) == 1:
+                geometry = {"type": "LineString", "coordinates": converted_lines[0]}
+            elif converted_lines:
+                geometry = {"type": "MultiLineString", "coordinates": converted_lines}
+
+        # 1-b. 一般路徑：遍歷每個點序列（多邊形外環或線）
+        geometry_type: Optional[str] = None
+        converted_shapes: List[Any] = []
+
+        if geometry is None:
+            for ring_idx, poly_ring in enumerate(polygons):
+                if rot_dims is not None and poly_ring:
+                    poly_ring = _derotate_coords(poly_ring, rot_dims[0], rot_dims[1], rot_dir)
+
+                # 檢查原始像素座標是否閉合 (首尾點是否相同)
+                is_input_closed = (len(poly_ring) > 2 and poly_ring[0] == poly_ring[-1])
+
+                # 轉換座標 (先轉換，不論是否閉合)
+                transformed_ring = _convert_coord_list(
+                    poly_ring, wf, transformer, crop_x, crop_y
+                )
+
+                # --- 決定類型與 GeoJSON 閉合修正 ---
+                current_type = None
+                shape: Any = None
+                if is_input_closed:
+                    # 判斷為 Polygon。強制 GeoJSON 閉合規範。
+                    current_type = "Polygon"
+                    if transformed_ring and transformed_ring[0] != transformed_ring[-1]:
+                        transformed_ring.append(transformed_ring[0])
+                    # 帶洞 Polygon：GeoJSON ring 順序 = [外環, 洞1, 洞2, ...]
+                    ring_group = [transformed_ring]
+                    obj_holes = holes_aligned[ring_idx] if ring_idx < len(holes_aligned) else []
+                    for hole in (obj_holes or []):
+                        if not hole or len(hole) <= 2:
+                            continue
+                        if rot_dims is not None:
+                            hole = _derotate_coords(hole, rot_dims[0], rot_dims[1], rot_dir)
+                        transformed_hole = _convert_coord_list(hole, wf, transformer, crop_x, crop_y)
+                        if transformed_hole and transformed_hole[0] != transformed_hole[-1]:
+                            transformed_hole.append(transformed_hole[0])
+                        ring_group.append(transformed_hole)
+                    shape = ring_group
+
+                elif len(transformed_ring) >= 2:
+                    # 判斷為 LineString (開放狀態，且至少兩個點)
+                    current_type = "LineString"
+                    shape = transformed_ring
                 else:
-                    # MultiPolygon: GeoJSON 座標結構: [[[環1]], [[環2]], ...]
-                    geometry = {"type": "MultiPolygon", "coordinates": [[ring] for ring in converted_shapes]}
-            
-            elif geometry_type == "LineString":
-                if len(converted_shapes) == 1:
-                    # 單一 LineString: GeoJSON 座標結構: [點1, 點2, ...]
-                    geometry = {"type": "LineString", "coordinates": converted_shapes[0]}
-                else:
-                    # MultiLineString: GeoJSON 座標結構: [[線1點], [線2點], ...]
-                    geometry = {"type": "MultiLineString", "coordinates": converted_shapes}
+                    continue # 點數不足，跳過
+
+                # --- 類型一致性檢查 ---
+                if geometry_type is None:
+                    geometry_type = current_type # 設定第一個檢測到的類型
+                elif geometry_type != current_type:
+                    # 如果一個 Feature 內包含混合類型 (LineString 和 Polygon)，這是無效的 GeoJSON Feature，跳過此幾何
+                    print(f"Warning: Object {idx} contains mixed Polygon/LineString geometries. Skipping geometry conversion.")
+                    geometry_type = None
+                    break
+
+                converted_shapes.append(shape)
+
+            # --- 最終組裝 Geometry ---
+            if converted_shapes:
+                if geometry_type == "Polygon":
+                    if len(converted_shapes) == 1:
+                        # 單一 Polygon: GeoJSON 座標結構: [[外環], [洞1], ...]
+                        geometry = {"type": "Polygon", "coordinates": converted_shapes[0]}
+                    else:
+                        # MultiPolygon: GeoJSON 座標結構: [[[外環, 洞...]], ...]（每組已是 ring list）
+                        geometry = {"type": "MultiPolygon", "coordinates": converted_shapes}
+
+                elif geometry_type == "LineString":
+                    if len(converted_shapes) == 1:
+                        # 單一 LineString: GeoJSON 座標結構: [點1, 點2, ...]
+                        geometry = {"type": "LineString", "coordinates": converted_shapes[0]}
+                    else:
+                        # MultiLineString: GeoJSON 座標結構: [[線1點], [線2點], ...]
+                        geometry = {"type": "MultiLineString", "coordinates": converted_shapes}
 
         # --- 2. 處理 BBox (轉為經緯度) ---
+        if rot_dims is not None and bbox_pixel and len(bbox_pixel) == 4:
+            bx1, by1, bx2, by2 = bbox_pixel
+            corners = _derotate_coords([[bx1, by1], [bx2, by2]], rot_dims[0], rot_dims[1], rot_dir)
+            bbox_pixel = [
+                min(p[0] for p in corners), min(p[1] for p in corners),
+                max(p[0] for p in corners), max(p[1] for p in corners),
+            ]
+
         bbox_lonlat = None
         if bbox_pixel and len(bbox_pixel) == 4:
             x1, y1, x2, y2 = bbox_pixel

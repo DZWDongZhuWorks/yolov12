@@ -166,19 +166,24 @@ def create_metrics_table(metrics_list: List[Dict[str, Any]]) -> str:
         return "無可用指標"
     
     # 表頭
-    table = "| 優化方法 | 總點數 | 簡化率 (%) | 面積保留率 (%) | 處理時間 (ms) |\n"
-    table += "|---------|--------|-----------|---------------|-------------|\n"
-    
+    table = "| 優化方法 | 總點數 | 簡化率 (%) | 面積保留率 (%) | 偏差 max/mean (px) | 處理時間 (ms) |\n"
+    table += "|---------|--------|-----------|---------------|-------------------|-------------|\n"
+
     # 數據行
     for m in metrics_list:
         method = m.get("method", "Unknown")
         total_points = m.get("total_points", 0)
         reduction = m.get("point_reduction_percent", 0.0)
         area_preservation = m.get("area_preservation_percent", 0.0)
+        dev_max = m.get("max_deviation_px", 0.0)
+        dev_mean = m.get("mean_deviation_px", 0.0)
         time_ms = m.get("processing_time_ms", 0.0)
-        
-        table += f"| {method} | {total_points} | {reduction:.1f}% | {area_preservation:.1f}% | {time_ms:.2f} |\n"
-    
+
+        table += (
+            f"| {method} | {total_points} | {reduction:.1f}% | {area_preservation:.1f}% "
+            f"| {dev_max:.2f} / {dev_mean:.2f} | {time_ms:.2f} |\n"
+        )
+
     return table
 
 

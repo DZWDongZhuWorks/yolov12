@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Optional, Set
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -13,6 +14,8 @@ DEFAULT_MAX_HOLE_AREA = 0
 DEFAULT_POLYGON_EPS_COEFF = 1.0
 DEFAULT_POLYGON_MIN_ASPECT = 0.0
 DEFAULT_POLYGON_PCA_MIN_COSINE = 0.94
+DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA = 5000.0
+DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES = 8
 
 
 def _coerce_int(value, default: int) -> int:
@@ -34,21 +37,22 @@ def _coerce_float(value, default: float) -> float:
 
 
 def _normalize_class_filter(raw_value) -> Optional[List[object]]:
+    """空值（None / 空字串 / 空清單）一律視為「全部類別」→ 回傳 None（不過濾）。"""
     if raw_value is None:
         return None
     if isinstance(raw_value, (list, tuple, set)):
         if len(raw_value) == 0:
-            return []
+            return None
         tokens = [t for t in raw_value if t not in (None, "")]
     else:
         text = str(raw_value).strip()
         if text.lower() in {"all", "*", "any"}:
             return None
         if not text:
-            return []
+            return None
         tokens = [t.strip() for t in text.replace("\n", ",").split(",") if t.strip()]
     if not tokens:
-        return []
+        return None
 
     normalized: List[object] = []
     for token in tokens:
@@ -174,7 +178,10 @@ def parse_mask_steps(steps_input) -> List[Dict[str, Any]]:
 
 
 def _build_polygon_step(name: str, count: int, eps_coeff=1.0, min_aspect=0.0,
-                        pca_min_cosine=0.94, pca_cross_class=False, classes=None) -> Dict[str, Any]:
+                        pca_min_cosine=0.94, pca_cross_class=False,
+                        max_area_px=DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA,
+                        target_vertices=DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES,
+                        classes=None) -> Dict[str, Any]:
     pca_cos = max(0.0, min(1.0, _coerce_float(pca_min_cosine, DEFAULT_POLYGON_PCA_MIN_COSINE)))
     return {
         "name": name,
@@ -183,6 +190,8 @@ def _build_polygon_step(name: str, count: int, eps_coeff=1.0, min_aspect=0.0,
         "min_aspect": max(0.0, _coerce_float(min_aspect, DEFAULT_POLYGON_MIN_ASPECT)),
         "pca_min_cosine": pca_cos,
         "pca_cross_class": bool(pca_cross_class),
+        "max_area_px": max(0.0, _coerce_float(max_area_px, DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA)),
+        "target_vertices": max(3, _coerce_int(target_vertices, DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES)),
         "classes": _normalize_class_filter(classes),
     }
 
@@ -196,7 +205,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
     elif not steps_input:
         return []
 
-    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line"}
+    valid_names = {"convex_hull", "rdp", "visvalingam_whyatt", "min_area_rect", "export_line", "pca", "polygon_to_lane_line", "small_object_fit", "smooth_spline", "fit_lines_arcs", "fit_spline_pca"}
     steps: List[Dict[str, Any]] = []
 
     if isinstance(steps_input, str):
@@ -218,6 +227,8 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
                 min_aspect=_coerce_float(chunks[3] if len(chunks) > 3 else DEFAULT_POLYGON_MIN_ASPECT, DEFAULT_POLYGON_MIN_ASPECT),
                 pca_min_cosine=_coerce_float(chunks[4] if len(chunks) > 4 else DEFAULT_POLYGON_PCA_MIN_COSINE, DEFAULT_POLYGON_PCA_MIN_COSINE),
                 pca_cross_class=str(chunks[5]).lower() in {"1", "true", "yes", "y", "on"} if len(chunks) > 5 else False,
+                max_area_px=_coerce_float(chunks[6] if len(chunks) > 6 else DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA, DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA),
+                target_vertices=_coerce_int(chunks[7] if len(chunks) > 7 else DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES, DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES),
             ))
         return steps
 
@@ -247,7 +258,16 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
             if count <= 0:
                 continue
             eps_coeff = row[count_index + 1] if len(row) > count_index + 1 else DEFAULT_POLYGON_EPS_COEFF
-            if len(row) > count_index + 5:
+            max_area_px = DEFAULT_POLYGON_SMALL_OBJECT_MAX_AREA
+            target_vertices = DEFAULT_POLYGON_SMALL_OBJECT_TARGET_VERTICES
+            if len(row) > count_index + 7:
+                min_aspect = row[count_index + 2]
+                pca_min_cosine = row[count_index + 3]
+                pca_cross_class = bool(row[count_index + 4]) if row[count_index + 4] is not None else False
+                max_area_px = row[count_index + 5]
+                target_vertices = row[count_index + 6]
+                classes = row[count_index + 7]
+            elif len(row) > count_index + 5:
                 min_aspect = row[count_index + 2]
                 pca_min_cosine = row[count_index + 3]
                 pca_cross_class = bool(row[count_index + 4]) if row[count_index + 4] is not None else False
@@ -262,7 +282,7 @@ def parse_polygon_steps(steps_input) -> List[Dict[str, Any]]:
                 pca_min_cosine = DEFAULT_POLYGON_PCA_MIN_COSINE
                 pca_cross_class = False
                 classes = row[count_index + 2] if len(row) > count_index + 2 else None
-            steps.append(_build_polygon_step(name, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class, classes))
+            steps.append(_build_polygon_step(name, count, eps_coeff, min_aspect, pca_min_cosine, pca_cross_class, max_area_px, target_vertices, classes))
     except Exception:
         return []
 
@@ -437,36 +457,26 @@ def _merge_instances_by_iou(instances: List[Dict[str, Any]], iou_threshold: floa
     return merged_instances
 
 
-def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[str, Any]]):
-    if not enabled or not steps:
-        return result
-    if not hasattr(result, "masks") or result.masks is None:
-        return result
-    if not hasattr(result, "boxes") or result.boxes is None:
-        return result
+def resolve_mask_step_filters(steps: List[Dict[str, Any]], names: Dict[int, str]) -> List[Dict[str, Any]]:
+    """把 mask 優化步驟的 classes（名稱/ID 混合）解析為 class_filter 集合。"""
+    return [{**step, "class_filter": _resolve_class_filter(step.get("classes"), names)} for step in steps]
 
-    masks = result.masks.data
-    boxes_data = result.boxes.data
-    if masks is None or len(masks) == 0 or boxes_data is None or len(boxes_data) == 0:
-        return result
 
-    orig_shape = result.orig_shape
-    mask_shape = masks.shape[1:]
-    boxes_np = boxes_data.detach().cpu().numpy()
-    is_track = result.boxes.is_track
-    names = getattr(result, "names", {}) or {}
+def apply_mask_steps_to_instances(
+    instances: List[Dict[str, Any]],
+    resolved_steps: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Tuple[str, float]]]:
+    """對 instance dicts 依序套用 mask 優化步驟，回傳 (instances, step_timings)。
 
-    resolved_steps = [{**step, "class_filter": _resolve_class_filter(step.get("classes"), names)} for step in steps]
-    instances: List[Dict[str, Any]] = []
-    for i, mask_tensor in enumerate(masks):
-        binary = (mask_tensor.detach().cpu().numpy() > 0.5).astype(np.uint8)
-        if binary.sum() == 0:
-            continue
-        cls_id = int(float(boxes_np[i][6] if is_track else boxes_np[i][5]))
-        conf = float(boxes_np[i][5] if is_track else boxes_np[i][4])
-        instances.append({"binary": binary, "cls_id": cls_id, "source_idx": i, "source_indices": [i], "conf": conf})
+    instance 至少需含 {binary, cls_id, conf}；其餘欄位（如 source_idx）在
+    形態學步驟中原樣保留。例外："merge" 步驟經 _merge_instances_by_iou 重建欄位，
+    僅保留 binary/cls_id/conf/source_idx/source_indices。
+    resolved_steps 需先經 resolve_mask_step_filters 解析 class_filter。
+    """
+    step_timings: List[Tuple[str, float]] = []
 
     for step in resolved_steps:
+        _t_step = time.perf_counter()
         step_name = step["name"]
         count = step["count"]
         class_filter = step.get("class_filter")
@@ -487,6 +497,7 @@ def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[s
                 instances = list(untouched)
                 for cls_instances in grouped.values():
                     instances.extend(_merge_instances_by_iou(cls_instances, step["merge_iou_threshold"]))
+            step_timings.append((f"{step_name} x{count}", (time.perf_counter() - _t_step) * 1000))
             continue
 
         next_instances: List[Dict[str, Any]] = []
@@ -520,15 +531,50 @@ def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[s
 
             for binary in binaries:
                 if binary.sum() > 0:
-                    next_instances.append({
-                        "binary": binary,
-                        "cls_id": item["cls_id"],
-                        "source_idx": item["source_idx"],
-                        "source_indices": list(item.get("source_indices", [item["source_idx"]])),
-                        "conf": item["conf"],
-                    })
+                    new_item = {**item, "binary": binary}
+                    if "source_indices" in item:
+                        new_item["source_indices"] = list(item["source_indices"])
+                    next_instances.append(new_item)
         instances = next_instances
+        step_timings.append((f"{step_name} x{count}", (time.perf_counter() - _t_step) * 1000))
 
+    return instances, step_timings
+
+
+def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[str, Any]]):
+    if not enabled or not steps:
+        return result
+    if not hasattr(result, "masks") or result.masks is None:
+        return result
+    if not hasattr(result, "boxes") or result.boxes is None:
+        return result
+
+    masks = result.masks.data
+    boxes_data = result.boxes.data
+    if masks is None or len(masks) == 0 or boxes_data is None or len(boxes_data) == 0:
+        return result
+
+    orig_shape = result.orig_shape
+    mask_shape = masks.shape[1:]
+    boxes_np = boxes_data.detach().cpu().numpy()
+    is_track = result.boxes.is_track
+    names = getattr(result, "names", {}) or {}
+
+    resolved_steps = resolve_mask_step_filters(steps, names)
+    _t0 = time.perf_counter()
+    instances: List[Dict[str, Any]] = []
+    for i, mask_tensor in enumerate(masks):
+        binary = (mask_tensor.detach().cpu().numpy() > 0.5).astype(np.uint8)
+        if binary.sum() == 0:
+            continue
+        cls_id = int(float(boxes_np[i][6] if is_track else boxes_np[i][5]))
+        conf = float(boxes_np[i][5] if is_track else boxes_np[i][4])
+        instances.append({"binary": binary, "cls_id": cls_id, "source_idx": i, "source_indices": [i], "conf": conf})
+    prepare_ms = (time.perf_counter() - _t0) * 1000
+
+    instances, step_timings = apply_mask_steps_to_instances(instances, resolved_steps)
+
+    _t0 = time.perf_counter()
     new_masks: List[np.ndarray] = []
     new_boxes: List[List[float]] = []
     for item in instances:
@@ -549,6 +595,14 @@ def apply_mask_optimizations_to_result(result, enabled: bool, steps: List[Dict[s
         else:
             new_boxes.append([x_min, y_min, x_max, y_max, conf, cls_float])
         new_masks.append(optimized.astype(np.uint8))
+    rebuild_ms = (time.perf_counter() - _t0) * 1000
+
+    steps_detail = " | ".join(f"{name} {ms:.1f}ms" for name, ms in step_timings)
+    total_ms = prepare_ms + rebuild_ms + sum(ms for _, ms in step_timings)
+    print(
+        f"[Timing] mask_opt ({len(instances)} instances): total {total_ms:.1f}ms"
+        f" | prepare {prepare_ms:.1f}ms | {steps_detail} | rebuild {rebuild_ms:.1f}ms"
+    )
 
     if not new_boxes:
         return result

@@ -40,6 +40,24 @@ def filter_result_by_classes(result, allowed_class_ids: Optional[List[int]]):
     return r
 
 
+def _normalize_label_modes(label_mode) -> set:
+    """標籤模式正規化：支援舊版單選字串（Radio）與新版複選清單（CheckboxGroup）。
+
+    回傳 {"id", "name"} 的子集合；空集合 = 隱藏標籤。
+    """
+    if label_mode is None:
+        return set()
+    modes = [label_mode] if isinstance(label_mode, str) else list(label_mode)
+    out = set()
+    for mode in modes:
+        text = str(mode).lower()
+        if "id" in text:
+            out.add("id")
+        if "name" in text:
+            out.add("name")
+    return out
+
+
 def annotate_from_results(
     result,
     label_mode: str,
@@ -69,7 +87,9 @@ def annotate_from_results(
         for obj in objects:
             cid = obj["class_id"]
             color = tuple(int(v) for v in ucolors(cid, bgr=True))
-            for seg in obj["polygons"]:
+            # 洞（內環）邊界與外環同色一併繪製
+            hole_rings = [h for group in (obj.get("holes") or []) for h in group]
+            for seg in list(obj["polygons"]) + hole_rings:
                 seg_arr = np.asarray(seg, dtype=np.float32)
                 if seg_arr.ndim != 2 or seg_arr.shape[0] < 2:
                     continue
@@ -81,7 +101,8 @@ def annotate_from_results(
                     for x, y in seg_arr.astype(np.int32):
                         cv2.circle(base, (int(x), int(y)), radius=3, color=(255, 255, 255), thickness=1)
 
-    if label_mode == "隱藏":
+    label_modes = _normalize_label_modes(label_mode)
+    if not label_modes:
         return base
 
     has_boxes = hasattr(filtered, "boxes") and filtered.boxes is not None and len(filtered.boxes) > 0
@@ -96,7 +117,12 @@ def annotate_from_results(
     pad = 3
 
     def _draw_label(x1: int, y1: int, cid: int, conf_val):
-        text = f"{cid}" if label_mode == "顯示 class id" else names.get(cid, str(cid))
+        parts = []
+        if "id" in label_modes:
+            parts.append(str(cid))
+        if "name" in label_modes:
+            parts.append(names.get(cid, str(cid)))
+        text = ": ".join(parts)  # 同時勾選 id 與 name → "id: name"
         if show_confidence and conf_val is not None:
             text = f"{text} {conf_val:.2f}"
 

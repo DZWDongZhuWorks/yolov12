@@ -1,12 +1,12 @@
 from typing import Any, Dict, List, Optional, Tuple
 
-from ultralytics import YOLO
+from .model_cache import get_model
 
 
 def get_model_names(model_id: str) -> Dict[Any, str]:
-    """Load model and return class-name mapping."""
+    """Load model (cached) and return class-name mapping."""
     try:
-        model = YOLO(model_id)
+        model = get_model(model_id)
         return model.names or {}
     except Exception as e:
         print(f"Error loading model {model_id}: {e}")

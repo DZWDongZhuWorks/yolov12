@@ -1,14 +1,50 @@
+import os
 import tempfile
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 from tqdm import tqdm
-from ultralytics import YOLO
 
 from .config import MAX_MODELS
 from .inference_optimizations import apply_mask_optimizations_to_result, parse_mask_steps
 from .inference_render import annotate_from_results
+from .model_cache import get_model
+
+
+def predict_image_single(
+    model_id: str,
+    image,
+    image_size: int,
+    conf_threshold: float,
+    device: Optional[str],
+):
+    """只跑推論、不做標註渲染。
+
+    結果一律移到 CPU：results 會被快取在 UI state（raw/last_results），
+    且 plot() 的遮罩上色會配置 (n,h,w,3) 大張量並跟著遮罩裝置走，
+    實例數多時留在 GPU 會 CUDA OOM。
+    """
+    model = get_model(model_id)
+    predict_kwargs = {"source": image, "imgsz": image_size, "conf": conf_threshold}
+    if device:
+        predict_kwargs["device"] = device
+    _t0 = time.perf_counter()
+    results = model.predict(**predict_kwargs)
+    predict_ms = (time.perf_counter() - _t0) * 1000
+    _t0 = time.perf_counter()
+    results = [r.cpu() for r in results]
+    to_cpu_ms = (time.perf_counter() - _t0) * 1000
+
+    speed = getattr(results[0], "speed", None) if results else None
+    detail = ""
+    if speed:
+        detail = " (" + " | ".join(
+            f"{k} {v:.1f}ms" for k, v in speed.items() if isinstance(v, (int, float))
+        ) + ")"
+    print(f"[Timing] predict {model_id}: total {predict_ms:.1f}ms{detail} | to_cpu {to_cpu_ms:.1f}ms")
+    return results
 
 
 def infer_image_single(
@@ -28,11 +64,7 @@ def infer_image_single(
     polygon_opt_steps,
     allowed_class_ids: Optional[List[int]],
 ):
-    model = YOLO(model_id)
-    predict_kwargs = {"source": image, "imgsz": image_size, "conf": conf_threshold}
-    if device:
-        predict_kwargs["device"] = device
-    results = model.predict(**predict_kwargs)
+    results = predict_image_single(model_id, image, image_size, conf_threshold, device)
     annotated_bgr = annotate_from_results(
         results[0], label_mode, show_boxes, show_masks, show_polygons, show_points,
         show_confidence, simplify_mode, simplify_eps_coeff, allowed_class_ids, polygon_opt_steps,
@@ -59,14 +91,15 @@ def infer_video_single(
     mask_opt_enabled: bool,
     mask_opt_steps,
 ):
-    model = YOLO(model_id)
+    model = get_model(model_id)
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    out_path = tempfile.mktemp(suffix=".webm")
+    fd, out_path = tempfile.mkstemp(suffix=".webm")
+    os.close(fd)
     out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"vp80"), fps, (frame_width, frame_height))
     mask_steps = parse_mask_steps(mask_opt_steps)
     pbar = tqdm(total=total_frames, desc=f"Processing {model_id}", unit="frame")
@@ -78,7 +111,8 @@ def infer_video_single(
         predict_kwargs = {"source": frame, "imgsz": image_size, "conf": conf_threshold}
         if device:
             predict_kwargs["device"] = device
-        results = model.predict(**predict_kwargs)
+        # 移到 CPU：避免遮罩上色在 GPU 配置大張量導致 OOM（密集場景）
+        results = [r.cpu() for r in model.predict(**predict_kwargs)]
         if mask_opt_enabled and mask_steps:
             results[0] = apply_mask_optimizations_to_result(results[0], mask_opt_enabled, mask_steps)
         annotated_bgr = annotate_from_results(
@@ -124,6 +158,20 @@ def yolov12_multi_inference_image(
         results_cache[mid] = results
 
     return gallery_items, results_cache
+
+
+def yolov12_multi_predict_image(
+    image,
+    model_ids: List[str],
+    image_size: int,
+    conf_threshold: float,
+    device: Optional[str],
+) -> Dict[str, Any]:
+    """多模型推論（不渲染），回傳 {model_id: results}。"""
+    return {
+        mid: predict_image_single(mid, image, image_size, conf_threshold, device)
+        for mid in model_ids
+    }
 
 
 def yolov12_multi_inference_video(
